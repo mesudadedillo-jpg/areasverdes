@@ -104,11 +104,25 @@ function datosPlanta(b, actual = {}) {
   return p;
 }
 
+// Cuenta de prueba: si no hay usuarios, se crea un administrador "test".
+// Usuario: test · Contraseña: test1234 (o la de la variable TEST_ADMIN_PASSWORD)
+async function asegurarCuentaPrueba() {
+  if ((await usuarios()).length > 0) return;
+  const u = crearUsuario({
+    nombre: "Test",
+    matricula: process.env.TEST_ADMIN_PASSWORD || "test1234",
+    rol: "admin",
+  });
+  await guardarUsuarios([u]);
+  if (!(await db.get("config/sanciones"))) await db.set("config/sanciones", SANCIONES_DEFAULT);
+}
+
 // ---------------------------------------------------------------- rutas
 async function rutas(req, partes) {
   const m = req.method;
   const [r0, r1, r2] = partes;
   const ahora = ahoraLocal();
+  await asegurarCuentaPrueba();
 
   // ---- públicas
   if (r0 === "estado" && m === "GET") {

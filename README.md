@@ -31,7 +31,11 @@ Todos los umbrales y horarios se cambian en *Clima y horarios*.
 
 1. En Netlify: **Add new site → Import an existing project → GitHub** y elige este repositorio.
 2. No hace falta comando de build. Netlify lee `netlify.toml` (carpeta `public` y funciones en `netlify/functions`).
-3. Publica. Al abrir el sitio por primera vez aparece la **configuración inicial** para crear la cuenta del administrador.
+3. Publica y entra con la **cuenta de prueba**: usuario `test`, contraseña `test1234`.
+   Desde ahí crea las cuentas reales (administrador, encargados y estudiantes).
+   Después, cambia la contraseña de `test` en *Mi cuenta* o desactívala desde otra cuenta de administrador,
+   porque cualquiera que conozca esos datos podría entrar como administrador.
+   (Puedes definir otra contraseña inicial con la variable `TEST_ADMIN_PASSWORD` antes del primer uso.)
 4. (Recomendado) En *Site configuration → Environment variables* agrega `AUTH_SECRET` con un texto largo y aleatorio.
 
 Los datos se guardan en **Netlify Blobs**, incluido gratis, sin configurar una base de datos aparte.

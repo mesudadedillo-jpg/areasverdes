@@ -1,0 +1,53 @@
+# Área Verde UPT
+
+Sistema web para el mantenimiento del área verde (Ética Profesional, UPT, grupo 403).
+Organiza los turnos de riego entre los estudiantes, los ajusta al clima real de Tulancingo
+y le da al jefe de grupo o tutor un panel para dar seguimiento y aplicar sanciones.
+
+## Perfiles
+
+| Perfil | Quién | Qué ve |
+| --- | --- | --- |
+| **Administrador** | Jefe de grupo o tutor | Panel de cumplimiento, justificaciones, sanciones, usuarios, plantas y ajustes |
+| **Encargado** | Equipo de mantenimiento | Turnos de hoy, zonas y plantas, estudiantes, ajustes del clima |
+| **Estudiante** | Los ~30 participantes | Sus tareas del día, su historial y sus sanciones (privadas) |
+
+**Inicio de sesión:** usuario = nombre completo (o matrícula), contraseña inicial = matrícula.
+Cada quien puede cambiar su contraseña en *Mi cuenta*.
+
+## Cómo funciona el riego con el clima
+
+Cada mañana, la primera vez que alguien entra, el sistema consulta el clima (Open-Meteo, gratis y sin clave) y decide:
+
+- **Lluvia** (se pronostican ≥ 5 mm hoy, o ayer llovieron ≥ 10 mm): no se generan riegos.
+- **Seco y caluroso** (máxima ≥ 28 °C sin lluvia): las plantas marcadas así se riegan 1 o 2 veces al día.
+- **Normal:** cada planta se riega según su frecuencia (cada N días desde su último riego).
+
+Los turnos se reparten de forma rotativa entre los estudiantes activos. Si a la hora límite un turno no se marcó
+como hecho, queda como *no cumplido*; el estudiante puede justificarlo y el administrador decide.
+Todos los umbrales y horarios se cambian en *Clima y horarios*.
+
+## Publicar en Netlify
+
+1. En Netlify: **Add new site → Import an existing project → GitHub** y elige este repositorio.
+2. No hace falta comando de build. Netlify lee `netlify.toml` (carpeta `public` y funciones en `netlify/functions`).
+3. Publica. Al abrir el sitio por primera vez aparece la **configuración inicial** para crear la cuenta del administrador.
+4. (Recomendado) En *Site configuration → Environment variables* agrega `AUTH_SECRET` con un texto largo y aleatorio.
+
+Los datos se guardan en **Netlify Blobs**, incluido gratis, sin configurar una base de datos aparte.
+
+## Probar en tu computadora
+
+```bash
+npm install
+npm run dev     # http://localhost:8888  (los datos se guardan en .data/)
+```
+
+## Estructura
+
+```
+public/                 Interfaz (HTML, CSS y JavaScript)
+netlify/functions/api.mjs   API: /api/*
+netlify/lib/            Clima, turnos, sesiones y almacenamiento
+dev-server.mjs          Servidor local de pruebas
+```

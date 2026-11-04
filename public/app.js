@@ -38,6 +38,139 @@ async function api(ruta, { method = "GET", body } = {}) {
   return data;
 }
 
+// ------------------------------------------------------------ notificaciones e instalación
+const esIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const instalada = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const soportaPush = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+let registroSW = null;
+let eventoInstalar = null;
+
+if ("serviceWorker" in navigator) {
+  registroSW = navigator.serviceWorker.register("/sw.js").catch(() => null);
+}
+addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  eventoInstalar = e;
+  pintarNotif();
+});
+addEventListener("appinstalled", () => {
+  eventoInstalar = null;
+  pintarNotif();
+});
+
+function b64aBytes(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function suscripcionActual() {
+  const reg = await registroSW;
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+// 'activas' | 'pendiente' | 'bloqueadas' | 'ios-instalar' | 'no-soporta'
+async function estadoNotif() {
+  if (esIOS && !instalada()) return "ios-instalar";
+  if (!soportaPush()) return "no-soporta";
+  if (Notification.permission === "denied") return "bloqueadas";
+  if (Notification.permission === "granted") {
+    const sub = await suscripcionActual();
+    if (sub) {
+      // Se vuelve a registrar en el servidor por si cambió de usuario o se borró
+      api("push/suscribir", { method: "POST", body: { suscripcion: sub.toJSON() } }).catch(() => {});
+      return "activas";
+    }
+  }
+  return "pendiente";
+}
+
+async function activarNotif() {
+  if (!soportaPush()) throw new Error("Este navegador no permite notificaciones.");
+  const permiso = await Notification.requestPermission();
+  if (permiso !== "granted") {
+    pintarNotif();
+    throw new Error("No se activaron las notificaciones.");
+  }
+  const reg = (await registroSW) || (await navigator.serviceWorker.ready);
+  const { clave } = await api("push/clave");
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64aBytes(clave) });
+  await api("push/suscribir", { method: "POST", body: { suscripcion: sub.toJSON() } });
+  await api("push/prueba", { method: "POST" });
+  avisar("¡Listo! Te avisaremos cuando te toque regar.");
+  pintarNotif();
+}
+
+async function desactivarNotif() {
+  const sub = await suscripcionActual();
+  if (sub) {
+    await api("push/quitar", { method: "POST", body: { endpoint: sub.endpoint } }).catch(() => {});
+    await sub.unsubscribe();
+  }
+}
+
+const TEXTO_NOTIF = {
+  pendiente: {
+    t: "Activa las notificaciones",
+    d: "Así te avisamos cuando te toque regar y antes de que se acabe tu turno.",
+    b: '<button class="btn chico" data-accion="activar-notif">Activar</button>',
+  },
+  bloqueadas: {
+    t: "Las notificaciones están bloqueadas",
+    d: "Actívalas en los ajustes del navegador: toca el candado junto a la dirección → Notificaciones → Permitir. Después recarga la página.",
+    b: "",
+  },
+  "ios-instalar": {
+    t: "Instala la app para recibir avisos",
+    d: "En iPhone: toca Compartir <b>⬆︎</b> → <b>Agregar a pantalla de inicio</b>, y abre la app desde el ícono. Ahí podrás activar las notificaciones.",
+    b: "",
+  },
+  "no-soporta": {
+    t: "Tu navegador no admite notificaciones",
+    d: "Abre la app en Chrome (Android) o instálala en la pantalla de inicio (iPhone) para recibir avisos.",
+    b: "",
+  },
+};
+
+async function pintarNotif() {
+  const caja = $("#notif");
+  if (!estado.usuario) {
+    caja.hidden = true;
+    return;
+  }
+  const e = await estadoNotif();
+  const instalarBtn = eventoInstalar && !instalada() ? '<button class="btn chico sec" data-accion="instalar">Instalar app</button>' : "";
+  if (e === "activas" && !instalarBtn) {
+    caja.hidden = true;
+    return;
+  }
+  const t = TEXTO_NOTIF[e];
+  caja.hidden = false;
+  caja.innerHTML = t
+    ? `<div class="banner-notif"><div><b>${t.t}</b><span>${t.d}</span></div><div class="fila">${t.b}${instalarBtn}</div></div>`
+    : `<div class="banner-notif"><div><b>Instala la app</b><span>Ábrela como aplicación desde tu pantalla de inicio.</span></div><div class="fila">${instalarBtn}</div></div>`;
+  // Cada vez que se abre la app sin notificaciones, se vuelve a pedir (una vez por sesión)
+  let pedido = null;
+  try { pedido = sessionStorage.getItem("av_pedido"); } catch {}
+  if (e === "pendiente" && !pedido && !$("#modal").open) {
+    try { sessionStorage.setItem("av_pedido", "1"); } catch {}
+    abrirModal(
+      `<h2>¿Te avisamos cuando te toque regar? 🌱</h2>
+       <p>Activa las notificaciones para recibir un aviso cuando tengas turno, un recordatorio una hora antes del límite y un aviso si el turno queda sin registrar.</p>
+       <p class="suave">Puedes desactivarlas cuando quieras en <b>Mi cuenta</b>.</p>`,
+      async () => {
+        await activarNotif();
+      }
+    );
+    $("#modal-form button[value=ok]").textContent = "Activar notificaciones";
+    $("#modal-form button[value=cancelar]").textContent = "Ahora no";
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") pintarNotif();
+});
+
 function avisar(msg, error = false) {
   const el = $("#aviso");
   el.textContent = msg;
@@ -60,7 +193,7 @@ const ETIQUETA = {
   hecha: "Hecha", pendiente: "Pendiente", incumplida: "No cumplida", lluvia: "Cubierta por lluvia", justificada: "Justificada",
 };
 const chip = (e) => `<span class="chip ${esc(e)}">${ETIQUETA[e] || esc(e)}</span>`;
-const ROL = { admin: "Administrador", encargado: "Encargado", estudiante: "Estudiante" };
+const ROL = { superadmin: "Super admin", admin: "Administrador", encargado: "Encargado", estudiante: "Estudiante" };
 
 const ICONOS = {
   sol: `<svg class="icono" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="12" fill="#f5b82e"/><g stroke="#f5b82e" stroke-width="4" stroke-linecap="round"><path d="M32 6v8M32 50v8M6 32h8M50 32h8M13.6 13.6l5.7 5.7M44.7 44.7l5.7 5.7M13.6 50.4l5.7-5.7M44.7 19.3l5.7-5.7"/></g></svg>`,
@@ -105,9 +238,13 @@ function confirmar(texto, accion, etiqueta = "Confirmar") {
 
 // ------------------------------------------------------------ sesión
 function cerrarSesion() {
+  // Al salir, este dispositivo deja de recibir los avisos de esa cuenta
+  if (estado.token) desactivarNotif().catch(() => {});
   estado.token = null;
   estado.usuario = null;
   guardar("av_token", null);
+  try { sessionStorage.removeItem("av_pedido"); } catch {}
+  $("#notif").hidden = true;
   iniciar();
 }
 
@@ -116,6 +253,7 @@ const PESTANAS = {
   encargado: [["hoy", "Hoy"], ["plantas", "Zonas y plantas"], ["usuarios", "Estudiantes"], ["historial", "Historial"], ["ajustes", "Clima y horarios"], ["cuenta", "Mi cuenta"]],
   admin: [["panel", "Panel"], ["hoy", "Hoy"], ["plantas", "Zonas y plantas"], ["usuarios", "Usuarios"], ["sanciones", "Sanciones"], ["historial", "Historial"], ["ajustes", "Clima y horarios"], ["cuenta", "Mi cuenta"]],
 };
+PESTANAS.superadmin = PESTANAS.admin;
 
 function pintarBarra() {
   const u = estado.usuario;
@@ -151,6 +289,7 @@ async function iniciar() {
     const pedida = location.hash.slice(1);
     const validas = PESTANAS[usuario.rol].map((p) => p[0]);
     ir(validas.includes(pedida) ? pedida : validas[0]);
+    pintarNotif().catch(() => {});
   } catch {
     cerrarSesion();
   }
@@ -272,7 +411,7 @@ VISTAS.hoy = async () => {
   const { dia, tareas, resumen } = hoy;
   const u = estado.usuario;
   let aviso = "";
-  if (u.debeCambiar) aviso = `<div class="banner aviso-ambar">Tu contraseña todavía es tu matrícula. <a href="#cuenta" data-ir="cuenta">Cámbiala aquí</a> para proteger tu cuenta.</div>`;
+  if (u.debeCambiar) aviso = `<div class="banner aviso-ambar">Todavía usas tu contraseña inicial. <a href="#cuenta" data-ir="cuenta">Cámbiala aquí</a> para proteger tu cuenta.</div>`;
 
   let cuerpo;
   if (dia?.inactivo) cuerpo = `<p class="vacio">${esc(dia.motivo)}</p>`;
@@ -526,32 +665,55 @@ VISTAS.plantas = async () => {
 };
 
 VISTAS.usuarios = async () => {
-  const admin = estado.usuario.rol === "admin";
-  const { usuarios } = await api("usuarios");
+  const admin = esAdmin();
+  const sup = estado.usuario.rol === "superadmin";
+  const { usuarios, asignables } = await api("usuarios");
   estado.cache.usuarios = usuarios;
-  const orden = { admin: 0, encargado: 1, estudiante: 2 };
+  estado.cache.asignables = asignables;
+  const orden = { superadmin: 0, admin: 1, encargado: 2, estudiante: 3 };
   usuarios.sort((a, b) => orden[a.rol] - orden[b.rol] || a.nombre.localeCompare(b.nombre, "es"));
+  const fila = (u) => {
+    const yo = u.id === estado.usuario.id;
+    const acciones = [];
+    if (yo) acciones.push("<small>Tú</small>");
+    else if (puedeTocar(u)) {
+      acciones.push(`<button class="btn chico sec" data-accion="editar-usuario" data-id="${u.id}">Editar</button>`);
+      acciones.push(`<button class="btn chico sec" data-accion="restablecer" data-id="${u.id}">Restablecer contraseña</button>`);
+      if (sup && (u.rol === "admin" || u.rol === "superadmin"))
+        acciones.push(`<button class="btn chico peligro" data-accion="quitar-admin" data-id="${u.id}">Quitar ${u.rol === "superadmin" ? "super admin" : "admin"}</button>`);
+      acciones.push(`<button class="btn chico sec" data-accion="activar" data-id="${u.id}">${u.activo === false ? "Activar" : "Desactivar"}</button>`);
+    } else acciones.push("<small>Solo el super admin puede modificarlo</small>");
+    if (u.rol === "estudiante") acciones.push(`<button class="btn chico sec" data-ir="historial" data-est="${u.id}">Historial</button>`);
+    return `<tr><td><b>${esc(u.nombre)}</b>${u.debeCambiar ? "<br><small>Aún usa su contraseña inicial</small>" : ""}</td><td>${esc(u.matricula) || "<small>—</small>"}</td>
+      ${admin ? `<td>${ROL[u.rol]}</td>` : ""}<td>${u.activo === false ? '<span class="chip info">Inactivo</span>' : '<span class="chip hecha">Activo</span>'}</td>
+      <td><div class="fila">${acciones.join("")}</div></td></tr>`;
+  };
+  const tabla = (titulo, lista, nota = "") =>
+    lista.length
+      ? `<section class="tarjeta"><h2>${titulo} <small>(${lista.length})</small></h2>${nota}<div class="tabla-env"><table>
+        <thead><tr><th>Nombre</th><th>Matrícula</th>${admin ? "<th>Perfil</th>" : ""}<th>Estado</th><th></th></tr></thead>
+        <tbody>${lista.map(fila).join("")}</tbody></table></div></section>`
+      : "";
+  const admins = usuarios.filter((u) => u.rol === "admin" || u.rol === "superadmin");
   app.innerHTML = `
     <div class="entre"><h1>${admin ? "Usuarios" : "Estudiantes"}</h1>
-      <div class="fila"><button class="btn sec" data-accion="importar-est">Importar lista</button><button class="btn" data-accion="nuevo-usuario">Agregar</button></div></div>
+      <div class="fila">
+        <button class="btn sec" data-accion="importar-est">Importar estudiantes</button>
+        ${asignables.includes("admin") ? `<button class="btn sec" data-accion="nuevo-usuario" data-rol="admin">Agregar admin</button>` : ""}
+        <button class="btn" data-accion="nuevo-usuario">Agregar</button>
+      </div></div>
     <p class="suave">Usuario: nombre completo o matrícula. Contraseña inicial: la matrícula.</p>
-    <section class="tarjeta"><div class="tabla-env"><table>
-      <thead><tr><th>Nombre</th><th>Matrícula</th>${admin ? "<th>Perfil</th>" : ""}<th>Estado</th><th></th></tr></thead>
-      <tbody>${
-        usuarios
-          .map(
-            (u) => `<tr><td><b>${esc(u.nombre)}</b>${u.debeCambiar ? '<br><small>Aún usa su matrícula como contraseña</small>' : ""}</td><td>${esc(u.matricula) || "<small>—</small>"}</td>
-          ${admin ? `<td>${ROL[u.rol]}</td>` : ""}<td>${u.activo === false ? '<span class="chip info">Inactivo</span>' : '<span class="chip hecha">Activo</span>'}</td>
-          <td><div class="fila">
-            ${u.id !== estado.usuario.id ? `<button class="btn chico sec" data-accion="editar-usuario" data-id="${u.id}">Editar</button>
-            <button class="btn chico sec" data-accion="restablecer" data-id="${u.id}">Restablecer contraseña</button>
-            <button class="btn chico sec" data-accion="activar" data-id="${u.id}">${u.activo === false ? "Activar" : "Desactivar"}</button>` : "<small>Tú</small>"}
-            ${u.rol === "estudiante" ? `<button class="btn chico sec" data-ir="historial" data-est="${u.id}">Historial</button>` : ""}
-          </div></td></tr>`
-          )
-          .join("") || `<tr><td colspan="5" class="vacio">Aún no hay usuarios.</td></tr>`
-      }</tbody></table></div></section>`;
+    ${admin ? tabla("Administradores", admins, `<p class="suave">${sup ? "Como super admin puedes agregar, quitar o cambiar a cualquier administrador." : "Puedes agregar administradores; solo el super admin puede quitarlos."}</p>`) : ""}
+    ${admin ? tabla("Encargados de mantenimiento", usuarios.filter((u) => u.rol === "encargado")) : ""}
+    ${tabla("Estudiantes", usuarios.filter((u) => u.rol === "estudiante")) || `<section class="tarjeta"><p class="vacio">Aún no hay estudiantes. Usa “Importar estudiantes” para pegar la lista del grupo.</p></section>`}`;
 };
+
+function puedeTocar(u) {
+  const r = estado.usuario.rol;
+  if (r === "superadmin") return true;
+  if (r === "admin") return u.rol === "encargado" || u.rol === "estudiante";
+  return u.rol === "estudiante";
+}
 
 VISTAS.ajustes = async () => {
   const { ajustes: a } = await api("ajustes");
@@ -602,11 +764,19 @@ VISTAS.cuenta = async () => {
     <section class="tarjeta"><p><b>${esc(u.nombre)}</b><br><span class="suave">${ROL[u.rol]}${u.matricula ? " · Matrícula " + esc(u.matricula) : ""}</span></p></section>
     <form class="tarjeta" id="f-pass">
       <h2>Cambiar contraseña</h2>
-      ${u.debeCambiar ? '<div class="banner aviso-ambar">Tu contraseña actual es tu matrícula. Te recomendamos cambiarla.</div>' : ""}
+      ${u.debeCambiar ? '<div class="banner aviso-ambar">Todavía usas tu contraseña inicial. Te recomendamos cambiarla.</div>' : ""}
       <div class="campo"><label>Contraseña actual</label><input name="actual" type="password" required autocomplete="current-password" /></div>
       <div class="campo"><label>Nueva contraseña</label><input name="nueva" type="password" minlength="6" required autocomplete="new-password" /></div>
       <button class="btn">Guardar</button>
     </form>
+    <section class="tarjeta"><h2>Notificaciones</h2>${await (async () => {
+      const e = await estadoNotif();
+      if (e === "activas")
+        return `<p>Activas en este dispositivo. Recibirás un aviso cuando te toque regar, un recordatorio 1 hora antes del límite y un aviso si el turno queda sin registrar.</p>
+        <div class="fila"><button class="btn chico sec" data-accion="probar-notif">Enviar prueba</button><button class="btn chico sec" data-accion="desactivar-notif">Desactivar</button></div>`;
+      const t = TEXTO_NOTIF[e];
+      return `<p><b>${t.t}.</b> ${t.d}</p>${t.b}`;
+    })()}</section>
     <section class="tarjeta"><h2>Privacidad</h2><p class="suave">El sistema solo guarda tu nombre, tu matrícula y tus turnos. Tus incumplimientos y sanciones solo los ve el administrador; nadie más del grupo.</p></section>`;
   $("#f-pass").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -624,6 +794,33 @@ VISTAS.cuenta = async () => {
 // ------------------------------------------------------------ acciones
 const ACCIONES = {
   salir: () => cerrarSesion(),
+
+  async "activar-notif"(b) {
+    b.disabled = true;
+    try {
+      await activarNotif();
+      if (estado.vista === "cuenta") ir("cuenta");
+    } finally {
+      b.disabled = false;
+    }
+  },
+  async "probar-notif"() {
+    const r = await api("push/prueba", { method: "POST" });
+    avisar(r.enviados ? "Notificación de prueba enviada." : "Este dispositivo no está suscrito todavía.", !r.enviados);
+  },
+  async "desactivar-notif"() {
+    await desactivarNotif();
+    avisar("Notificaciones desactivadas en este dispositivo.");
+    ir("cuenta");
+    pintarNotif();
+  },
+  async instalar() {
+    if (!eventoInstalar) return;
+    eventoInstalar.prompt();
+    await eventoInstalar.userChoice.catch(() => {});
+    eventoInstalar = null;
+    pintarNotif();
+  },
 
   async hecha(b) {
     b.disabled = true;
@@ -833,13 +1030,14 @@ const ACCIONES = {
     );
   },
 
-  "nuevo-usuario"() {
-    const admin = estado.usuario.rol === "admin";
+  "nuevo-usuario"(b) {
+    const asignables = estado.cache.asignables || ["estudiante"];
+    const pre = b.dataset.rol || "estudiante";
     abrirModal(
-      `<h2>Agregar ${admin ? "usuario" : "estudiante"}</h2>
+      `<h2>${pre === "admin" ? "Agregar administrador" : asignables.length > 1 ? "Agregar usuario" : "Agregar estudiante"}</h2>
        <div class="campo"><label>Nombre completo</label><input name="nombre" required /></div>
-       <div class="campo"><label>Matrícula</label><input name="matricula" required minlength="4" /><p class="ayuda">Será su contraseña inicial.</p></div>
-       ${admin ? `<div class="campo"><label>Perfil</label><select name="rol"><option value="estudiante">Estudiante</option><option value="encargado">Encargado de mantenimiento</option><option value="admin">Administrador (jefe de grupo o tutor)</option></select></div>` : ""}`,
+       <div class="campo"><label>Matrícula o número de empleado</label><input name="matricula" required minlength="4" /><p class="ayuda">Será su contraseña inicial.</p></div>
+       ${asignables.length > 1 ? `<div class="campo"><label>Perfil</label>${selectorRol(asignables, pre)}</div>` : ""}`,
       async (d) => {
         await api("usuarios", { method: "POST", body: d });
         avisar("Usuario agregado.");
@@ -866,12 +1064,12 @@ const ACCIONES = {
   },
   "editar-usuario"(b) {
     const u = estado.cache.usuarios.find((x) => x.id === b.dataset.id);
-    const admin = estado.usuario.rol === "admin";
+    const asignables = estado.cache.asignables || ["estudiante"];
     abrirModal(
       `<h2>Editar usuario</h2>
        <div class="campo"><label>Nombre completo</label><input name="nombre" required value="${esc(u.nombre)}" /></div>
-       <div class="campo"><label>Matrícula</label><input name="matricula" value="${esc(u.matricula)}" /></div>
-       ${admin ? `<div class="campo"><label>Perfil</label><select name="rol">${Object.entries(ROL).map(([k, v]) => `<option value="${k}" ${k === u.rol ? "selected" : ""}>${v}</option>`).join("")}</select></div>` : ""}`,
+       <div class="campo"><label>Matrícula</label><input name="matricula" value="${esc(u.matricula)}" /><p class="ayuda">Con “Restablecer contraseña” la contraseña pasa a ser esta matrícula.</p></div>
+       ${asignables.length > 1 && asignables.includes(u.rol) ? `<div class="campo"><label>Perfil</label>${selectorRol(asignables, u.rol)}</div>` : ""}`,
       async (d) => {
         await api(`usuarios/${u.id}`, { method: "PUT", body: d });
         ir("usuarios");
@@ -890,7 +1088,41 @@ const ACCIONES = {
     await api(`usuarios/${u.id}`, { method: "PUT", body: { activo: u.activo === false } });
     ir("usuarios");
   },
+  "quitar-admin"(b) {
+    const u = estado.cache.usuarios.find((x) => x.id === b.dataset.id);
+    abrirModal(
+      `<h2>Quitar a ${esc(u.nombre)} como ${u.rol === "superadmin" ? "super admin" : "administrador"}</h2>
+       <p class="suave">Elige qué pasa con su cuenta.</p>
+       <div class="campo"><label>Acción</label><select name="accion">
+         ${u.rol === "superadmin" ? '<option value="admin">Dejarlo como administrador</option>' : ""}
+         <option value="encargado">Convertirlo en encargado de mantenimiento</option>
+         <option value="estudiante">Convertirlo en estudiante</option>
+         <option value="eliminar">Eliminar su cuenta</option>
+       </select></div>`,
+      async (d) => {
+        if (d.accion === "eliminar") await api(`usuarios/${u.id}`, { method: "DELETE" });
+        else await api(`usuarios/${u.id}`, { method: "PUT", body: { rol: d.accion } });
+        avisar(d.accion === "eliminar" ? "Cuenta eliminada." : "Perfil actualizado.");
+        ir("usuarios");
+      }
+    );
+    $("#modal-form button[value=ok]").textContent = "Quitar";
+  },
 };
+
+const DESC_ROL = {
+  superadmin: "Super admin (puede quitar administradores)",
+  admin: "Administrador (jefe de grupo o tutor)",
+  encargado: "Encargado de mantenimiento",
+  estudiante: "Estudiante",
+};
+function selectorRol(asignables, actual) {
+  return `<select name="rol">${["estudiante", "encargado", "admin", "superadmin"]
+    .filter((r) => asignables.includes(r))
+    .map((r) => `<option value="${r}" ${r === actual ? "selected" : ""}>${DESC_ROL[r]}</option>`)
+    .join("")}</select>`;
+}
+const esAdmin = () => ["admin", "superadmin"].includes(estado.usuario?.rol);
 
 function alertaErrores(errores) {
   abrirModal(`<h2>Algunas líneas no se importaron</h2><ul>${errores.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`, async () => {

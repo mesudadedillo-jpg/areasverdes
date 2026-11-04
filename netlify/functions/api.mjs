@@ -7,10 +7,26 @@ import {
   claveTarea, conEstado, estadoEfectivo, generarDia, marcarLluvia, nuevoId,
   tareasDelDia, tareasRango, usuarios,
 } from "../lib/tareas.mjs";
+import { clavePublica, desuscribir, enviarA, suscribir, tieneSuscripcion } from "../lib/push.mjs";
 
 export const config = { path: "/api/*" };
 
-const ROLES = ["admin", "encargado", "estudiante"];
+const ROLES = ["superadmin", "admin", "encargado", "estudiante"];
+const esAdmin = (u) => u.rol === "admin" || u.rol === "superadmin";
+const rolesAsignables = (rol) =>
+  rol === "superadmin" ? ROLES
+  : rol === "admin" ? ["admin", "encargado", "estudiante"]
+  : rol === "encargado" ? ["estudiante"]
+  : [];
+
+// Equipo de mantenimiento: se registra una sola vez como encargados.
+// Como aún no tienen matrícula registrada, su contraseña temporal es "areaverde".
+const EQUIPO = [
+  "Joshua Dylan Caro Lemus",
+  "Fabricio Guajardo Soto",
+  "Jesus Ernesto Romero Hernandez",
+  "Marcos Roberto Tolentino Diaz",
+];
 const SANCIONES_DEFAULT = [
   { id: "s1", nombre: "Recordatorio", descripcion: "Aviso privado para que no vuelva a pasar.", nivel: 1 },
   { id: "s2", nombre: "Turno extra de riego", descripcion: "Cubrir un turno adicional en la semana.", nivel: 2 },
@@ -52,8 +68,10 @@ async function sesion(req) {
   if (!u || u.activo === false) fail(401, "Usuario no válido.");
   return u;
 }
+// El super admin tiene todos los permisos del admin
 const exigir = (u, ...roles) => {
-  if (!roles.includes(u.rol)) fail(403, "No tienes permiso para esta acción.");
+  const rol = u.rol === "superadmin" ? "admin" : u.rol;
+  if (!roles.includes(rol)) fail(403, "No tienes permiso para esta acción.");
 };
 
 async function guardarUsuarios(lista) {
@@ -106,15 +124,38 @@ function datosPlanta(b, actual = {}) {
 
 // Cuenta de prueba: si no hay usuarios, se crea un administrador "test".
 // Usuario: test · Contraseña: test1234 (o la de la variable TEST_ADMIN_PASSWORD)
+let semillaLista = false;
 async function asegurarCuentaPrueba() {
-  if ((await usuarios()).length > 0) return;
-  const u = crearUsuario({
-    nombre: "Test",
-    matricula: process.env.TEST_ADMIN_PASSWORD || "test1234",
-    rol: "admin",
-  });
-  await guardarUsuarios([u]);
+  if (semillaLista) return;
+  let lista = await usuarios();
+  let cambio = false;
+  if (lista.length === 0) {
+    lista.push(
+      crearUsuario({ nombre: "Test", matricula: process.env.TEST_ADMIN_PASSWORD || "test1234", rol: "superadmin" })
+    );
+    cambio = true;
+  }
+  // Si ya existía la cuenta de prueba como admin, se convierte en super admin
+  if (!lista.some((u) => u.rol === "superadmin")) {
+    const primero = lista.filter((u) => u.rol === "admin").sort((a, b) => a.creado - b.creado)[0];
+    if (primero) {
+      primero.rol = "superadmin";
+      cambio = true;
+    }
+  }
+  if (!(await db.get("config/semilla-equipo"))) {
+    for (const nombre of EQUIPO) {
+      if (lista.some((u) => u.usuario === normalize(nombre))) continue;
+      const u = crearUsuario({ nombre, matricula: "", rol: "encargado", password: "areaverde" });
+      u.debeCambiar = true;
+      lista.push(u);
+    }
+    await db.set("config/semilla-equipo", true);
+    cambio = true;
+  }
+  if (cambio) await guardarUsuarios(lista);
   if (!(await db.get("config/sanciones"))) await db.set("config/sanciones", SANCIONES_DEFAULT);
+  semillaLista = true;
 }
 
 // ---------------------------------------------------------------- rutas
@@ -162,6 +203,33 @@ async function rutas(req, partes) {
     Object.assign(u, hashPassword(b.nueva), { debeCambiar: false });
     await guardarUsuarios(lista);
     return json({ ok: true });
+  }
+
+  // ---- notificaciones
+  if (r0 === "push") {
+    if (r1 === "clave" && m === "GET")
+      return json({ clave: await clavePublica(), suscrito: await tieneSuscripcion(yo.id) });
+    const b = await body(req);
+    if (r1 === "suscribir" && m === "POST") {
+      try {
+        await suscribir(yo.id, b.suscripcion);
+      } catch (e) {
+        fail(400, e.message);
+      }
+      return json({ ok: true });
+    }
+    if (r1 === "quitar" && m === "POST") {
+      if (b.endpoint) await desuscribir(yo.id, b.endpoint);
+      return json({ ok: true });
+    }
+    if (r1 === "prueba" && m === "POST") {
+      const n = await enviarA(yo.id, {
+        titulo: "¡Notificaciones activadas! 🌱",
+        cuerpo: "Así te avisaremos cuando te toque regar.",
+        etiqueta: "prueba",
+      });
+      return json({ enviados: n });
+    }
   }
 
   // ---- clima
@@ -259,6 +327,13 @@ async function rutas(req, partes) {
       t.estudianteId = est.id;
       t.estudianteNombre = est.nombre;
       await db.set(claveTarea(t), t);
+      if (t.fecha === ahora.fecha && t.estado === "pendiente") {
+        await enviarA(est.id, {
+          titulo: "Te asignaron un turno de riego 🌱",
+          cuerpo: `${t.plantaNombre} (${t.areaNombre}) · antes de las ${t.limite}.`,
+          etiqueta: `${t.id}-reasignada`,
+        }).catch(() => {});
+      }
       return json({ tarea: conEstado(t, ahora) });
     }
   }
@@ -351,10 +426,14 @@ async function rutas(req, partes) {
   if (r0 === "usuarios") {
     exigir(yo, "admin", "encargado");
     const lista = await usuarios();
-    const puedeTocar = (u) => yo.rol === "admin" || u.rol === "estudiante";
+    // Qué perfiles puede crear/asignar cada quien
+    const asignables = rolesAsignables(yo.rol);
+    // A quién puede modificar: super admin a todos; admin a encargados y estudiantes; encargado a estudiantes
+    const puedeTocar = (u) =>
+      yo.rol === "superadmin" || (yo.rol === "admin" ? ["encargado", "estudiante"].includes(u.rol) : u.rol === "estudiante");
     if (m === "GET" && !r1) {
-      const visibles = yo.rol === "admin" ? lista : lista.filter((u) => u.rol === "estudiante");
-      return json({ usuarios: visibles.map(publico) });
+      const visibles = esAdmin(yo) ? lista : lista.filter((u) => u.rol === "estudiante");
+      return json({ usuarios: visibles.map(publico), asignables });
     }
     const b = await body(req);
     if (m === "POST" && r1 === "importar") {
@@ -380,7 +459,7 @@ async function rutas(req, partes) {
     }
     if (m === "POST" && !r1) {
       const rol = b.rol || "estudiante";
-      if (yo.rol !== "admin" && rol !== "estudiante") fail(403, "Solo el administrador crea otros perfiles.");
+      if (!asignables.includes(rol)) fail(403, "No puedes crear usuarios con ese perfil.");
       const u = crearUsuario({ nombre: b.nombre, matricula: b.matricula, rol });
       validarUnico(lista, u);
       lista.push(u);
@@ -392,6 +471,11 @@ async function rutas(req, partes) {
     if (!puedeTocar(u)) fail(403, "No puedes modificar este perfil.");
     if (u.id === yo.id && (m === "DELETE" || (b.activo === false) || (b.rol && b.rol !== yo.rol)))
       fail(400, "No puedes desactivar ni cambiar el rol de tu propia cuenta.");
+    if (b.rol && b.rol !== u.rol && !asignables.includes(b.rol)) fail(403, "No puedes asignar ese perfil.");
+    // Siempre debe quedar al menos un super admin activo
+    const quitaSuper = u.rol === "superadmin" && (m === "DELETE" || b.activo === false || (b.rol && b.rol !== "superadmin"));
+    if (quitaSuper && lista.filter((x) => x.rol === "superadmin" && x.activo !== false).length <= 1)
+      fail(400, "Debe quedar al menos un super admin.");
     if (m === "POST" && r2 === "restablecer") {
       if (!u.matricula) fail(400, "Este usuario no tiene matrícula registrada.");
       Object.assign(u, hashPassword(u.matricula), { debeCambiar: true });
@@ -404,7 +488,7 @@ async function rutas(req, partes) {
         u.usuario = normalize(u.nombre);
       }
       if (b.matricula !== undefined) u.matricula = texto(b.matricula, 30);
-      if (b.rol && yo.rol === "admin" && ROLES.includes(b.rol)) u.rol = b.rol;
+      if (b.rol && ROLES.includes(b.rol)) u.rol = b.rol;
       if (typeof b.activo === "boolean") u.activo = b.activo;
       validarUnico(lista, u, u.id);
       await guardarUsuarios(lista);

@@ -8,12 +8,32 @@ y le da al jefe de grupo o tutor un panel para dar seguimiento y aplicar sancion
 
 | Perfil | Quién | Qué ve |
 | --- | --- | --- |
-| **Administrador** | Jefe de grupo o tutor | Panel de cumplimiento, justificaciones, sanciones, usuarios, plantas y ajustes |
+| **Super admin** | Responsable del sistema (la cuenta `test` al inicio) | Todo lo del administrador, y además puede quitar o cambiar administradores |
+| **Administrador** | Jefe de grupo o tutor | Panel de cumplimiento, justificaciones, sanciones, usuarios, plantas y ajustes. Puede agregar admins, pero no quitarlos |
 | **Encargado** | Equipo de mantenimiento | Turnos de hoy, zonas y plantas, estudiantes, ajustes del clima |
 | **Estudiante** | Los ~30 participantes | Sus tareas del día, su historial y sus sanciones (privadas) |
 
 **Inicio de sesión:** usuario = nombre completo (o matrícula), contraseña inicial = matrícula.
 Cada quien puede cambiar su contraseña en *Mi cuenta*.
+
+**Equipo de mantenimiento:** Joshua, Fabricio, Jesús Ernesto y Marcos Roberto ya vienen registrados como encargados.
+Entran con su nombre completo y la contraseña temporal `areaverde` (la app les pide cambiarla).
+
+## Notificaciones en el celular
+
+La app se puede instalar en la pantalla de inicio y manda avisos aunque esté cerrada:
+
+- cuando a un estudiante le toca regar,
+- un recordatorio 1 hora antes de la hora límite,
+- un aviso si el turno quedó sin registrar (para que pueda justificarlo),
+- cuando le reasignan un turno.
+
+Cada vez que alguien abre la app sin notificaciones, se le vuelve a pedir que las active.
+Una función programada de Netlify revisa los turnos cada 15 minutos. Las llaves de las notificaciones se crean solas.
+
+- **Android (Chrome):** se activan directo desde la app.
+- **iPhone:** primero hay que agregar la app a la pantalla de inicio (Compartir → Agregar a inicio) y abrirla desde el ícono;
+  Apple solo permite notificaciones web así (iOS 16.4 o más reciente).
 
 ## Cómo funciona el riego con el clima
 

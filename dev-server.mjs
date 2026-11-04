@@ -9,7 +9,7 @@ const { default: api } = await import("./netlify/functions/api.mjs");
 
 const PORT = Number(process.env.PORT) || 8888;
 const PUBLIC = path.resolve("public");
-const TIPOS = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json" };
+const TIPOS = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json", ".webmanifest": "application/manifest+json" };
 
 http
   .createServer(async (req, res) => {

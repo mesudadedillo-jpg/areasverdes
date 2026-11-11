@@ -135,7 +135,8 @@ const TEXTO_NOTIF = {
 
 async function pintarNotif() {
   const caja = $("#notif");
-  if (!estado.usuario) {
+  // Los docentes no tienen turnos, así que no se les piden notificaciones
+  if (!estado.usuario || estado.usuario.rol === "docente") {
     caja.hidden = true;
     return;
   }
@@ -193,7 +194,7 @@ const ETIQUETA = {
   hecha: "Hecha", pendiente: "Pendiente", incumplida: "No cumplida", lluvia: "Cubierta por lluvia", justificada: "Justificada",
 };
 const chip = (e) => `<span class="chip ${esc(e)}">${ETIQUETA[e] || esc(e)}</span>`;
-const ROL = { superadmin: "Super admin", admin: "Administrador", encargado: "Encargado", estudiante: "Estudiante" };
+const ROL = { superadmin: "Super admin", admin: "Administrador", encargado: "Encargado", docente: "Docente", estudiante: "Estudiante" };
 
 const ICONOS = {
   sol: `<svg class="icono" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="12" fill="#f5b82e"/><g stroke="#f5b82e" stroke-width="4" stroke-linecap="round"><path d="M32 6v8M32 50v8M6 32h8M50 32h8M13.6 13.6l5.7 5.7M44.7 44.7l5.7 5.7M13.6 50.4l5.7-5.7M44.7 19.3l5.7-5.7"/></g></svg>`,
@@ -251,7 +252,8 @@ function cerrarSesion() {
 const PESTANAS = {
   estudiante: [["hoy", "Mis tareas"], ["historial", "Historial"], ["sanciones", "Mis sanciones"], ["cuenta", "Mi cuenta"]],
   encargado: [["hoy", "Hoy"], ["plantas", "Zonas y plantas"], ["usuarios", "Estudiantes"], ["historial", "Historial"], ["ajustes", "Clima y horarios"], ["cuenta", "Mi cuenta"]],
-  admin: [["panel", "Panel"], ["hoy", "Hoy"], ["plantas", "Zonas y plantas"], ["usuarios", "Usuarios"], ["sanciones", "Sanciones"], ["historial", "Historial"], ["ajustes", "Clima y horarios"], ["cuenta", "Mi cuenta"]],
+  admin: [["panel", "Panel"], ["hoy", "Hoy"], ["resultados", "Cuestionario"], ["plantas", "Zonas y plantas"], ["usuarios", "Usuarios"], ["sanciones", "Sanciones"], ["historial", "Historial"], ["ajustes", "Clima y horarios"], ["cuenta", "Mi cuenta"]],
+  docente: [["resultados", "Cuestionario"], ["cuenta", "Mi cuenta"]],
 };
 PESTANAS.superadmin = PESTANAS.admin;
 
@@ -265,9 +267,13 @@ function pintarBarra() {
   $("#pestanas").innerHTML = PESTANAS[u.rol]
     .map(([id, t]) => `<button data-ir="${id}" ${estado.vista === id ? 'aria-current="page"' : ""}>${t}</button>`)
     .join("");
+  // En el celular las pestañas se deslizan de lado: se deja visible la pestaña actual
+  $("#pestanas [aria-current]")?.scrollIntoView({ block: "nearest", inline: "center" });
 }
 
 function ir(vista, extra = {}) {
+  clearInterval(estado.timer);
+  estado.timer = null;
   estado.vista = vista;
   estado.extra = extra;
   try { history.replaceState(null, "", "#" + vista); } catch {}
@@ -304,12 +310,14 @@ function vistaLogin() {
     <p class="sub">Mantenimiento y riego del área verde</p>
     <form class="tarjeta" id="f-login">
       <div class="campo"><label for="usuario">Usuario</label>
-        <input id="usuario" name="usuario" autocomplete="username" required placeholder="Tu nombre completo o tu matrícula" /></div>
+        <input id="usuario" name="usuario" autocomplete="username" autocapitalize="none" spellcheck="false" required placeholder="Ej. MariaLopezHernandez o tu matrícula" />
+        <p class="ayuda">Tu nombre completo sin espacios (no importan mayúsculas ni acentos), o tu matrícula.</p></div>
       <div class="campo"><label for="password">Contraseña</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required />
         <p class="ayuda">La primera vez tu contraseña es tu matrícula. Después puedes cambiarla.</p></div>
       <button class="btn bloque">Entrar</button>
     </form>
+    <p class="sub"><a href="/visita">¿Visitas el área verde? Responde el cuestionario</a></p>
   </div>`;
   $("#f-login").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -670,7 +678,7 @@ VISTAS.usuarios = async () => {
   const { usuarios, asignables } = await api("usuarios");
   estado.cache.usuarios = usuarios;
   estado.cache.asignables = asignables;
-  const orden = { superadmin: 0, admin: 1, encargado: 2, estudiante: 3 };
+  const orden = { superadmin: 0, admin: 1, encargado: 2, docente: 3, estudiante: 4 };
   usuarios.sort((a, b) => orden[a.rol] - orden[b.rol] || a.nombre.localeCompare(b.nombre, "es"));
   const fila = (u) => {
     const yo = u.id === estado.usuario.id;
@@ -684,7 +692,7 @@ VISTAS.usuarios = async () => {
       acciones.push(`<button class="btn chico sec" data-accion="activar" data-id="${u.id}">${u.activo === false ? "Activar" : "Desactivar"}</button>`);
     } else acciones.push("<small>Solo el super admin puede modificarlo</small>");
     if (u.rol === "estudiante") acciones.push(`<button class="btn chico sec" data-ir="historial" data-est="${u.id}">Historial</button>`);
-    return `<tr><td><b>${esc(u.nombre)}</b>${u.debeCambiar ? "<br><small>Aún usa su contraseña inicial</small>" : ""}</td><td>${esc(u.matricula) || "<small>—</small>"}</td>
+    return `<tr><td><b>${esc(u.nombre)}</b><br><small>Usuario: ${esc(u.usuario)}</small>${u.debeCambiar ? "<br><small>Aún usa su contraseña inicial</small>" : ""}</td><td>${esc(u.matricula) || "<small>—</small>"}</td>
       ${admin ? `<td>${ROL[u.rol]}</td>` : ""}<td>${u.activo === false ? '<span class="chip info">Inactivo</span>' : '<span class="chip hecha">Activo</span>'}</td>
       <td><div class="fila">${acciones.join("")}</div></td></tr>`;
   };
@@ -702,17 +710,158 @@ VISTAS.usuarios = async () => {
         ${asignables.includes("admin") ? `<button class="btn sec" data-accion="nuevo-usuario" data-rol="admin">Agregar admin</button>` : ""}
         <button class="btn" data-accion="nuevo-usuario">Agregar</button>
       </div></div>
-    <p class="suave">Usuario: nombre completo o matrícula. Contraseña inicial: la matrícula.</p>
+    <p class="suave">Usuario: nombre completo sin espacios (o la matrícula). Contraseña inicial: la matrícula. Cada quien puede cambiar su usuario y su contraseña en <b>Mi cuenta</b>.</p>
     ${admin ? tabla("Administradores", admins, `<p class="suave">${sup ? "Como super admin puedes agregar, quitar o cambiar a cualquier administrador." : "Puedes agregar administradores; solo el super admin puede quitarlos."}</p>`) : ""}
     ${admin ? tabla("Encargados de mantenimiento", usuarios.filter((u) => u.rol === "encargado")) : ""}
+    ${admin ? tabla("Docentes", usuarios.filter((u) => u.rol === "docente"), '<p class="suave">Los docentes solo ven los resultados del cuestionario de visitantes.</p>') : ""}
     ${tabla("Estudiantes", usuarios.filter((u) => u.rol === "estudiante")) || `<section class="tarjeta"><p class="vacio">Aún no hay estudiantes. Usa “Importar estudiantes” para pegar la lista del grupo.</p></section>`}`;
 };
 
 function puedeTocar(u) {
   const r = estado.usuario.rol;
   if (r === "superadmin") return true;
-  if (r === "admin") return u.rol === "encargado" || u.rol === "estudiante";
+  if (r === "admin") return ["encargado", "docente", "estudiante"].includes(u.rol);
   return u.rol === "estudiante";
+}
+
+// ------------------------------------------------------------ resultados del cuestionario (en vivo)
+const PERIODOS = [["todo", "Todo"], ["hoy", "Hoy"], ["7", "Últimos 7 días"], ["30", "Últimos 30 días"]];
+const horaMx = (ms) =>
+  new Date(ms).toLocaleString("es-MX", { timeZone: "America/Mexico_City", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+function graficaPregunta(p, i) {
+  return `<section class="tarjeta grafica" data-q="${p.id}">
+    <h3>${i + 1}. ${esc(p.texto)}</h3>
+    <p class="nota" data-nota></p>
+    ${p.opciones
+      .map(
+        (o) => `<div class="fila-dato" data-o="${esc(o.opcion)}">
+          <span class="etiqueta">${esc(o.opcion)}</span>
+          <div class="pista eje"><i></i></div>
+          <span class="valor"></span></div>`
+      )
+      .join("")}
+  </section>`;
+}
+
+function pintarResultados(d) {
+  $("#st-total").textContent = d.total;
+  $("#st-general").textContent = d.totalGeneral;
+  $("#st-hoy").textContent = d.hoy;
+  $("#st-ultima").textContent = d.ultima ? horaMx(d.ultima) : "—";
+  $("#sin-respuestas").hidden = d.total > 0;
+  for (const p of d.preguntas) {
+    const caja = app.querySelector(`[data-q="${p.id}"]`);
+    if (!caja) continue;
+    caja.querySelector("[data-nota]").textContent =
+      `${d.total} respuesta${d.total === 1 ? "" : "s"}` + (p.multiple ? " · se podían elegir varias; % de las personas que respondieron" : "");
+    for (const o of p.opciones) {
+      const fila = [...caja.querySelectorAll(".fila-dato")].find((f) => f.dataset.o === o.opcion);
+      if (!fila) continue;
+      fila.querySelector("i").style.width = o.pct + "%";
+      fila.querySelector(".pista").title = `${o.opcion}: ${o.n} (${o.pct}%)`;
+      fila.querySelector(".valor").innerHTML = `<b>${o.n}</b> · ${o.pct}%`;
+    }
+  }
+  const max = Math.max(1, ...d.porDia.map((x) => x.n));
+  $("#columnas").innerHTML = d.porDia
+    .map((x) => `<div class="col" title="${fechaBonita(x.fecha)}: ${x.n} respuesta(s)">${x.n ? `<span>${x.n}</span>` : ""}<i style="height:${(x.n / max) * 100}%"></i></div>`)
+    .join("");
+  $("#columnas-ejes").innerHTML = d.porDia.map((x) => `<small>${Number(x.fecha.slice(8))}</small>`).join("");
+}
+
+VISTAS.resultados = async () => {
+  const f = { periodo: estado.extra?.periodo || "todo", carrera: estado.extra?.carrera || "" };
+  const ruta = () => `encuesta/resultados?periodo=${f.periodo}&carrera=${encodeURIComponent(f.carrera)}`;
+  const d = await api(ruta());
+  const carreras = d.preguntas[0].opciones.map((o) => o.opcion);
+  app.innerHTML = `
+    <div class="entre"><h1>Resultados del cuestionario</h1><span class="vivo" id="vivo">En vivo</span></div>
+    <p class="suave">Respuestas anónimas de quienes visitan el área verde. La página se actualiza sola cada 5 segundos.</p>
+    <div class="stats">
+      <div class="stat"><b id="st-total">0</b><small>Respuestas con estos filtros</small></div>
+      <div class="stat"><b id="st-general">0</b><small>Respuestas en total</small></div>
+      <div class="stat"><b id="st-hoy">0</b><small>Respuestas de hoy</small></div>
+      <div class="stat"><b id="st-ultima" style="font-size:1.05rem">—</b><small>Última respuesta</small></div>
+    </div>
+    <section class="tarjeta no-imprimir">
+      <div class="filtros">
+        <div class="campo"><label for="f-periodo">Periodo</label><select id="f-periodo">${PERIODOS.map(
+          ([v, t]) => `<option value="${v}" ${v === f.periodo ? "selected" : ""}>${t}</option>`
+        ).join("")}</select></div>
+        <div class="campo"><label for="f-carrera">Carrera</label><select id="f-carrera"><option value="">Todas</option>${carreras
+          .map((c) => `<option ${c === f.carrera ? "selected" : ""}>${esc(c)}</option>`)
+          .join("")}</select></div>
+        <div class="fila">
+          <button class="btn sec" data-accion="qr-encuesta">Código QR</button>
+          <button class="btn sec" data-accion="csv-encuesta">Descargar CSV</button>
+          <button class="btn sec" data-accion="imprimir">Imprimir</button>
+          ${esAdmin() ? '<button class="btn sec" data-accion="borrar-encuesta">Borrar respuestas</button>' : ""}
+        </div>
+      </div>
+    </section>
+    <div class="banner info" id="sin-respuestas" hidden>Aún no hay respuestas con estos filtros. Imprime el código QR y colócalo en el área verde para que los visitantes respondan.</div>
+    <section class="tarjeta">
+      <h2>Respuestas por día</h2>
+      <p class="suave" style="font-size:.85rem">Últimos 14 días${f.carrera ? " · " + esc(f.carrera) : ""}</p>
+      <div class="columnas" id="columnas"></div>
+      <div class="columnas-ejes" id="columnas-ejes"></div>
+    </section>
+    <div class="rejilla-graficas">${d.preguntas.map(graficaPregunta).join("")}</div>`;
+  // Primero en cero y luego con los datos, para que las barras crezcan
+  requestAnimationFrame(() => pintarResultados(d));
+
+  const cambiar = () => ir("resultados", { periodo: $("#f-periodo").value, carrera: $("#f-carrera").value });
+  $("#f-periodo").onchange = cambiar;
+  $("#f-carrera").onchange = cambiar;
+
+  let totalVisto = d.totalGeneral;
+  estado.timer = setInterval(async () => {
+    if (document.hidden || estado.vista !== "resultados") return;
+    const vivo = $("#vivo");
+    try {
+      const n = await api(ruta());
+      if (estado.vista !== "resultados") return;
+      if (n.totalGeneral > totalVisto) {
+        const nuevas = n.totalGeneral - totalVisto;
+        avisar(nuevas === 1 ? "Llegó una respuesta nueva." : `Llegaron ${nuevas} respuestas nuevas.`);
+        $("#st-general").parentElement.classList.remove("nueva");
+        void $("#st-general").offsetWidth;
+        $("#st-general").parentElement.classList.add("nueva");
+      }
+      totalVisto = n.totalGeneral;
+      pintarResultados(n);
+      vivo.classList.remove("pausa");
+      vivo.textContent = "En vivo";
+    } catch {
+      vivo.classList.add("pausa");
+      vivo.textContent = "Sin conexión, reintentando…";
+    }
+  }, 5000);
+};
+
+function cargarQR() {
+  if (window.qrcode) return Promise.resolve(window.qrcode);
+  return new Promise((ok, mal) => {
+    const s = document.createElement("script");
+    s.src = "vendor/qrcode.js";
+    s.onload = () => ok(window.qrcode);
+    s.onerror = () => mal(new Error("No se pudo cargar el generador de QR."));
+    document.head.appendChild(s);
+  });
+}
+
+async function svgQR(texto) {
+  const qrcode = await cargarQR();
+  const qr = qrcode(0, "M");
+  qr.addData(texto);
+  qr.make();
+  return qr.createSvgTag({ cellSize: 8, margin: 32, scalable: true, title: "Cuestionario del área verde" });
+}
+
+function csvCelda(v) {
+  const s = String(v ?? "");
+  return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 VISTAS.ajustes = async () => {
@@ -761,7 +910,15 @@ VISTAS.cuenta = async () => {
   const u = estado.usuario;
   app.innerHTML = `
     <h1>Mi cuenta</h1>
-    <section class="tarjeta"><p><b>${esc(u.nombre)}</b><br><span class="suave">${ROL[u.rol]}${u.matricula ? " · Matrícula " + esc(u.matricula) : ""}</span></p></section>
+    <section class="tarjeta"><p><b>${esc(u.nombre)}</b><br><span class="suave">${ROL[u.rol]}${u.matricula ? " · Matrícula " + esc(u.matricula) : ""}</span></p>
+      <p class="suave">Tu usuario: <b id="mi-usuario">${esc(u.usuario)}</b></p></section>
+    <form class="tarjeta" id="f-usuario">
+      <h2>Cambiar usuario</h2>
+      <div class="campo"><label>Nuevo usuario</label><input name="usuario" required minlength="3" maxlength="40" pattern="[^\\s]+" autocapitalize="none" spellcheck="false" autocomplete="username" value="${esc(u.usuario)}" />
+        <p class="ayuda">Sin espacios. Puede llevar letras, números, punto, guion y guion bajo. También puedes seguir entrando con tu matrícula.</p></div>
+      <div class="campo"><label>Contraseña actual (para confirmar)</label><input name="password" type="password" required autocomplete="current-password" /></div>
+      <button class="btn">Guardar usuario</button>
+    </form>
     <form class="tarjeta" id="f-pass">
       <h2>Cambiar contraseña</h2>
       ${u.debeCambiar ? '<div class="banner aviso-ambar">Todavía usas tu contraseña inicial. Te recomendamos cambiarla.</div>' : ""}
@@ -769,7 +926,7 @@ VISTAS.cuenta = async () => {
       <div class="campo"><label>Nueva contraseña</label><input name="nueva" type="password" minlength="6" required autocomplete="new-password" /></div>
       <button class="btn">Guardar</button>
     </form>
-    <section class="tarjeta"><h2>Notificaciones</h2>${await (async () => {
+    <section class="tarjeta" ${u.rol === "docente" ? "hidden" : ""}><h2>Notificaciones</h2>${u.rol === "docente" ? "" : await (async () => {
       const e = await estadoNotif();
       if (e === "activas")
         return `<p>Activas en este dispositivo. Recibirás un aviso cuando te toque regar, un recordatorio 1 hora antes del límite y un aviso si el turno queda sin registrar.</p>
@@ -777,7 +934,21 @@ VISTAS.cuenta = async () => {
       const t = TEXTO_NOTIF[e];
       return `<p><b>${t.t}.</b> ${t.d}</p>${t.b}`;
     })()}</section>
-    <section class="tarjeta"><h2>Privacidad</h2><p class="suave">El sistema solo guarda tu nombre, tu matrícula y tus turnos. Tus incumplimientos y sanciones solo los ve el administrador; nadie más del grupo.</p></section>`;
+    <section class="tarjeta"><h2>Privacidad</h2><p class="suave">${u.rol === "docente"
+      ? "El sistema solo guarda tu nombre y tu usuario. Las respuestas del cuestionario son anónimas: no se guarda quién respondió."
+      : "El sistema solo guarda tu nombre, tu matrícula y tus turnos. Tus incumplimientos y sanciones solo los ve el administrador; nadie más del grupo."}</p></section>`;
+  $("#f-usuario").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await api("yo/usuario", { method: "POST", body: Object.fromEntries(new FormData(ev.target)) });
+      estado.usuario = r.usuario;
+      $("#mi-usuario").textContent = r.usuario.usuario;
+      ev.target.password.value = "";
+      avisar("Usuario actualizado. Úsalo la próxima vez que entres.");
+    } catch (e) {
+      avisar(e.message, true);
+    }
+  };
   $("#f-pass").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
@@ -1036,7 +1207,7 @@ const ACCIONES = {
     abrirModal(
       `<h2>${pre === "admin" ? "Agregar administrador" : asignables.length > 1 ? "Agregar usuario" : "Agregar estudiante"}</h2>
        <div class="campo"><label>Nombre completo</label><input name="nombre" required /></div>
-       <div class="campo"><label>Matrícula o número de empleado</label><input name="matricula" required minlength="4" /><p class="ayuda">Será su contraseña inicial.</p></div>
+       <div class="campo"><label>Matrícula o número de empleado</label><input name="matricula" required minlength="4" /><p class="ayuda">Será su contraseña inicial. Su usuario será su nombre completo sin espacios.</p></div>
        ${asignables.length > 1 ? `<div class="campo"><label>Perfil</label>${selectorRol(asignables, pre)}</div>` : ""}`,
       async (d) => {
         await api("usuarios", { method: "POST", body: d });
@@ -1068,6 +1239,8 @@ const ACCIONES = {
     abrirModal(
       `<h2>Editar usuario</h2>
        <div class="campo"><label>Nombre completo</label><input name="nombre" required value="${esc(u.nombre)}" /></div>
+       <div class="campo"><label>Usuario</label><input name="usuario" required minlength="3" maxlength="40" autocapitalize="none" spellcheck="false" value="${esc(u.usuario)}" />
+         <p class="ayuda">Sin espacios. Si cambias el nombre y dejas este campo igual, el usuario se actualiza solo (salvo que la persona haya elegido el suyo).</p></div>
        <div class="campo"><label>Matrícula</label><input name="matricula" value="${esc(u.matricula)}" /><p class="ayuda">Con “Restablecer contraseña” la contraseña pasa a ser esta matrícula.</p></div>
        ${asignables.length > 1 && asignables.includes(u.rol) ? `<div class="campo"><label>Perfil</label>${selectorRol(asignables, u.rol)}</div>` : ""}`,
       async (d) => {
@@ -1108,16 +1281,73 @@ const ACCIONES = {
     );
     $("#modal-form button[value=ok]").textContent = "Quitar";
   },
+
+  async "qr-encuesta"() {
+    const url = location.origin + "/visita";
+    const svg = await svgQR(url);
+    abrirModal(
+      `<h2>Código QR del cuestionario</h2>
+       <p class="suave">Imprímelo y colócalo en el área verde. Al escanearlo, los visitantes abren la sección pública con el cuestionario.</p>
+       <div class="qr-caja">${svg}<code>${esc(url)}</code></div>`,
+      async () => {
+        const w = open("", "_blank");
+        if (!w) throw new Error("Permite las ventanas emergentes para imprimir el QR.");
+        w.document.write(`<!doctype html><meta charset="utf-8"><title>QR · Área Verde UPT</title>
+          <style>body{font-family:system-ui,sans-serif;text-align:center;padding:40px;color:#1d2a1f}svg{width:320px;height:320px}h1{color:#2e6b3a;margin-bottom:4px}p{font-size:18px}</style>
+          <h1>Área Verde UPT</h1><p>Escanea el código y cuéntanos cómo te sientes en el área verde.<br>Es anónimo y toma 2 minutos.</p>${svg}<p><b>${esc(url)}</b></p>
+          <script>onload=()=>{print()}<\/script>`);
+        w.document.close();
+      }
+    );
+    $("#modal-form button[value=ok]").textContent = "Imprimir QR";
+    $("#modal-form button[value=cancelar]").textContent = "Cerrar";
+  },
+
+  async "csv-encuesta"() {
+    const { preguntas, respuestas } = await api("encuesta/exportar");
+    const filas = [
+      ["Fecha", "Hora", ...preguntas.map((p, i) => `${i + 1}. ${p.texto}`)],
+      ...respuestas.map((r) => [
+        r.fecha,
+        new Date(r.en).toLocaleTimeString("es-MX", { timeZone: "America/Mexico_City", hour: "2-digit", minute: "2-digit" }),
+        ...preguntas.map((p) => (Array.isArray(r.r[p.id]) ? r.r[p.id].join(" | ") : r.r[p.id])),
+      ]),
+    ];
+    // El BOM hace que Excel muestre bien los acentos
+    const csv = "﻿" + filas.map((f) => f.map(csvCelda).join(",")).join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = `cuestionario-area-verde-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => (URL.revokeObjectURL(a.href), a.remove()), 1000);
+    avisar(`${respuestas.length} respuesta(s) descargadas.`);
+  },
+
+  imprimir: () => print(),
+
+  "borrar-encuesta"() {
+    confirmar(
+      "Se borrarán <b>todas</b> las respuestas del cuestionario. Úsalo solo para quitar respuestas de prueba antes de empezar. Descarga el CSV primero si quieres conservarlas. No se puede deshacer.",
+      async () => {
+        const r = await api("encuesta/respuestas", { method: "DELETE" });
+        avisar(`${r.borradas} respuesta(s) borradas.`);
+        ir("resultados");
+      },
+      "Borrar todo"
+    );
+  },
 };
 
 const DESC_ROL = {
   superadmin: "Super admin (puede quitar administradores)",
   admin: "Administrador (jefe de grupo o tutor)",
   encargado: "Encargado de mantenimiento",
+  docente: "Docente (solo ve los resultados del cuestionario)",
   estudiante: "Estudiante",
 };
 function selectorRol(asignables, actual) {
-  return `<select name="rol">${["estudiante", "encargado", "admin", "superadmin"]
+  return `<select name="rol">${["estudiante", "docente", "encargado", "admin", "superadmin"]
     .filter((r) => asignables.includes(r))
     .map((r) => `<option value="${r}" ${r === actual ? "selected" : ""}>${DESC_ROL[r]}</option>`)
     .join("")}</select>`;

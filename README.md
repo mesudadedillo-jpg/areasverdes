@@ -11,10 +11,32 @@ y le da al jefe de grupo o tutor un panel para dar seguimiento y aplicar sancion
 | **Super admin** | Responsable del sistema (la cuenta `test` al inicio) | Todo lo del administrador, y además puede quitar o cambiar administradores |
 | **Administrador** | Jefe de grupo o tutor | Panel de cumplimiento, justificaciones, sanciones, usuarios, plantas y ajustes. Puede agregar admins, pero no quitarlos |
 | **Encargado** | Equipo de mantenimiento | Turnos de hoy, zonas y plantas, estudiantes, ajustes del clima |
+| **Docente** | Docentes del proyecto | Solo los resultados del cuestionario de visitantes (no ve turnos ni datos de estudiantes) |
 | **Estudiante** | Los ~30 participantes | Sus tareas del día, su historial y sus sanciones (privadas) |
 
-**Inicio de sesión:** usuario = nombre completo (o matrícula), contraseña inicial = matrícula.
-Cada quien puede cambiar su contraseña en *Mi cuenta*.
+**Inicio de sesión:** usuario = nombre completo **sin espacios** (por ejemplo `MariaGuadalupeAlarconSantos`) o la matrícula;
+no importan mayúsculas ni acentos. Contraseña inicial = matrícula.
+Cada quien puede cambiar su usuario y su contraseña en *Mi cuenta*.
+
+**Estudiantes ya registrados:** María Guadalupe Alarcon Santos, Neidy Emireth Mejia Santos, Erika Rubí Vargas Jacobo,
+Yessenia Ximena Salinas Cordero y América Isabel Martinez Islas (se crean solos la primera vez que se abre la app).
+
+## Sección pública: cuestionario para visitantes
+
+`/visita` es una sección aparte, sin iniciar sesión, con su propio menú:
+
+- **Cuestionario:** las 12 preguntas sobre estrés y el área verde. Es anónimo: no pide nombre ni guarda datos que identifiquen.
+- **El área verde:** zonas, plantas y el clima del día.
+
+En *Cuestionario* (administradores, super admin y docentes) se ven los resultados con gráficas que se actualizan solas cada 5 segundos,
+con filtros por periodo y carrera. Desde ahí se imprime el **código QR** (apunta a `/visita` del sitio publicado),
+se descarga un **CSV** para Excel y, solo los administradores, se pueden **borrar las respuestas de prueba**.
+
+## ¿Dónde se guardan los datos?
+
+En **Netlify Blobs**, el almacenamiento del mismo sitio de Netlify. No es un archivo público: nadie puede leerlo desde el navegador;
+solo la API lo consulta, y cada ruta revisa la sesión y el perfil. Las contraseñas se guardan cifradas con scrypt (nunca en texto),
+las sesiones van firmadas y vencen a los 7 días, y las respuestas del cuestionario no llevan nombre, IP ni datos del dispositivo.
 
 **Equipo de mantenimiento:** Joshua, Fabricio, Jesús Ernesto y Marcos Roberto ya vienen registrados como encargados.
 Entran con su nombre completo y la contraseña temporal `areaverde` (la app les pide cambiarla).
@@ -71,6 +93,8 @@ npm run dev     # http://localhost:8888  (los datos se guardan en .data/)
 
 ```
 public/                 Interfaz (HTML, CSS y JavaScript)
+public/visita.html      Sección pública para visitantes (cuestionario)
+public/vendor/qrcode.js Generador de códigos QR (MIT, Kazuhiko Arase)
 netlify/functions/api.mjs   API: /api/*
 netlify/lib/            Clima, turnos, sesiones y almacenamiento
 dev-server.mjs          Servidor local de pruebas

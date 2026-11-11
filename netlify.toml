@@ -16,3 +16,14 @@
   [headers.values]
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "same-origin"
+
+# Sección pública para visitantes (el QR apunta a /visita)
+[[redirects]]
+  from = "/visita"
+  to = "/visita.html"
+  status = 200
+
+[[redirects]]
+  from = "/encuesta"
+  to = "/visita"
+  status = 301

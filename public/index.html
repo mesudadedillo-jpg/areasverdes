@@ -16,18 +16,20 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="barra" id="barra" hidden>
-    <div class="marca">
-      <img src="favicon.svg" alt="" width="28" height="28" />
-      <span>Área Verde</span>
-    </div>
-    <div class="quien">
-      <span id="quien-nombre"></span>
-      <span class="rol" id="quien-rol"></span>
-      <button class="btn-link" data-accion="salir">Salir</button>
-    </div>
-  </header>
-  <nav class="pestanas" id="pestanas" hidden></nav>
+  <div class="cabecera">
+    <header class="barra" id="barra" hidden>
+      <div class="marca">
+        <img src="favicon.svg" alt="" width="28" height="28" />
+        <span>Área Verde</span>
+      </div>
+      <div class="quien">
+        <span id="quien-nombre"></span>
+        <span class="rol" id="quien-rol"></span>
+        <button class="btn-link" data-accion="salir">Salir</button>
+      </div>
+    </header>
+    <nav class="pestanas" id="pestanas" hidden></nav>
+  </div>
   <div id="notif" class="contenedor-notif" hidden></div>
   <main id="app" class="contenedor">
     <p class="cargando">Cargando…</p>

@@ -27,7 +27,9 @@ http
       res.end(Buffer.from(await r.arrayBuffer()));
       return;
     }
-    let file = path.join(PUBLIC, url.pathname === "/" ? "index.html" : url.pathname);
+    // /visita sirve visita.html, igual que en Netlify
+    const ruta = url.pathname === "/" ? "index.html" : url.pathname === "/encuesta" ? "visita.html" : path.extname(url.pathname) ? url.pathname : url.pathname + ".html";
+    let file = path.join(PUBLIC, ruta);
     if (!file.startsWith(PUBLIC)) file = path.join(PUBLIC, "index.html");
     try {
       const data = await fs.readFile(file);

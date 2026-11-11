@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#2e6b3a" />
+  <meta name="description" content="Área verde de la UPT: cuestionario para visitantes e información de las zonas y plantas." />
+  <title>Área Verde UPT · Visitantes</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="publico">
+  <div class="cabecera">
+    <header class="barra">
+      <a class="marca" href="/visita">
+        <img src="favicon.svg" alt="" width="28" height="28" />
+        <span>Área Verde UPT</span>
+      </a>
+      <a class="btn-link" href="/">Acceso del equipo</a>
+    </header>
+    <nav class="pestanas" id="menu" aria-label="Menú para visitantes">
+      <button data-sec="cuestionario">Cuestionario</button>
+      <button data-sec="area">El área verde</button>
+    </nav>
+  </div>
+  <main id="app" class="contenedor"><p class="cargando">Cargando…</p></main>
+  <div id="aviso" class="aviso" role="status" aria-live="polite"></div>
+  <script src="visita.js" type="module"></script>
+</body>
+</html>

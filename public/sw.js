@@ -1,6 +1,6 @@
 // Service worker: recibe notificaciones y permite abrir la app sin conexión.
-const CACHE = "areaverde-v2";
-const ARCHIVOS = ["/", "/index.html", "/app.js", "/styles.css", "/favicon.svg", "/icon-192.png", "/manifest.webmanifest"];
+const CACHE = "areaverde-v3";
+const ARCHIVOS = ["/", "/index.html", "/app.js", "/styles.css", "/favicon.svg", "/icon-192.png", "/manifest.webmanifest", "/visita.html", "/visita.js"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ARCHIVOS)).catch(() => {}));

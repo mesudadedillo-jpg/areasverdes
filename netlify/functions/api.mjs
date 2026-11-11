@@ -8,16 +8,32 @@ import {
   tareasDelDia, tareasRango, usuarios,
 } from "../lib/tareas.mjs";
 import { clavePublica, desuscribir, enviarA, suscribir, tieneSuscripcion } from "../lib/push.mjs";
+import * as encuesta from "../lib/encuesta.mjs";
 
 export const config = { path: "/api/*" };
 
-const ROLES = ["superadmin", "admin", "encargado", "estudiante"];
+const ROLES = ["superadmin", "admin", "encargado", "docente", "estudiante"];
 const esAdmin = (u) => u.rol === "admin" || u.rol === "superadmin";
 const rolesAsignables = (rol) =>
   rol === "superadmin" ? ROLES
-  : rol === "admin" ? ["admin", "encargado", "estudiante"]
+  : rol === "admin" ? ["admin", "encargado", "docente", "estudiante"]
   : rol === "encargado" ? ["estudiante"]
   : [];
+// Los docentes solo consultan los resultados del cuestionario; no ven turnos ni datos de estudiantes
+const veTurnos = (u) => u.rol !== "docente";
+
+// Usuario = nombre completo sin espacios. Al iniciar sesión no importan mayúsculas, acentos ni espacios.
+const sinEspacios = (s) => String(s || "").replace(/\s+/g, "");
+const claveUsuario = (s) => normalize(s).replace(/\s+/g, "");
+
+// Estudiantes que se registran una sola vez (contraseña inicial = matrícula)
+const ESTUDIANTES_INICIALES = [
+  ["María Guadalupe Alarcon Santos", "2534415"],
+  ["Neidy Emireth Mejia Santos", "2534541"],
+  ["Erika Rubí Vargas Jacobo", "2530953"],
+  ["Yessenia Ximena Salinas Cordero", "2530963"],
+  ["América Isabel Martinez Islas", "2530883"],
+];
 
 // Equipo de mantenimiento: se registra una sola vez como encargados.
 // Como aún no tienen matrícula registrada, su contraseña temporal es "areaverde".
@@ -88,7 +104,7 @@ function crearUsuario({ nombre, matricula, rol, password }) {
   return {
     id: nuevoId(),
     nombre,
-    usuario: normalize(nombre),
+    usuario: sinEspacios(nombre),
     matricula,
     rol,
     activo: true,
@@ -99,10 +115,21 @@ function crearUsuario({ nombre, matricula, rol, password }) {
 }
 
 function validarUnico(lista, u, idIgnorar) {
-  if (lista.some((x) => x.id !== idIgnorar && x.usuario === u.usuario))
-    fail(409, `Ya existe un usuario llamado "${u.nombre}".`);
-  if (u.matricula && lista.some((x) => x.id !== idIgnorar && x.matricula && x.matricula === u.matricula))
+  const otros = lista.filter((x) => x.id !== idIgnorar);
+  const k = claveUsuario(u.usuario);
+  // El usuario tampoco puede ser igual a la matrícula de otra persona, porque también sirve para entrar
+  if (otros.some((x) => claveUsuario(x.usuario) === k || (x.matricula && claveUsuario(x.matricula) === k)))
+    fail(409, `El usuario "${u.usuario}" ya está en uso.`);
+  if (u.matricula && otros.some((x) => (x.matricula && x.matricula === u.matricula) || claveUsuario(x.usuario) === claveUsuario(u.matricula)))
     fail(409, `La matrícula ${u.matricula} ya está registrada.`);
+}
+
+function validarFormatoUsuario(v) {
+  const s = texto(v, 60);
+  if (/\s/.test(s)) fail(400, "El usuario no puede llevar espacios.");
+  if (s.length < 3 || s.length > 40) fail(400, "El usuario debe tener entre 3 y 40 caracteres.");
+  if (!/^[\p{L}\p{N}._-]+$/u.test(s)) fail(400, "El usuario solo puede llevar letras, números, punto, guion y guion bajo.");
+  return s;
 }
 
 function datosPlanta(b, actual = {}) {
@@ -153,7 +180,25 @@ async function asegurarCuentaPrueba() {
     await db.set("config/semilla-equipo", true);
     cambio = true;
   }
+  // Antes el usuario era el nombre con espacios; ahora es el nombre sin espacios
+  for (const u of lista) {
+    if (!u.usuarioPropio && /\s/.test(u.usuario || "")) {
+      u.usuario = sinEspacios(u.nombre);
+      cambio = true;
+    }
+  }
+  const semillaEst = !(await db.get("config/semilla-estudiantes-1"));
+  if (semillaEst) {
+    for (const [nombre, matricula] of ESTUDIANTES_INICIALES) {
+      const k = claveUsuario(nombre);
+      if (lista.some((u) => u.matricula === matricula || claveUsuario(u.usuario) === k)) continue;
+      lista.push(crearUsuario({ nombre, matricula, rol: "estudiante" }));
+    }
+    cambio = true;
+  }
   if (cambio) await guardarUsuarios(lista);
+  // La marca se guarda después, para no perder a nadie si fallara el guardado
+  if (semillaEst) await db.set("config/semilla-estudiantes-1", true);
   if (!(await db.get("config/sanciones"))) await db.set("config/sanciones", SANCIONES_DEFAULT);
   semillaLista = true;
 }
@@ -182,17 +227,66 @@ async function rutas(req, partes) {
 
   if (r0 === "login" && m === "POST") {
     const b = await body(req);
-    const clave = normalize(b.usuario);
+    const clave = claveUsuario(b.usuario);
+    if (!clave) fail(401, "Usuario o contraseña incorrectos.");
     const lista = await usuarios();
-    const u = lista.find((x) => x.activo !== false && (x.usuario === clave || (x.matricula && normalize(x.matricula) === clave)));
+    const u = lista.find(
+      (x) => x.activo !== false && (claveUsuario(x.usuario) === clave || (x.matricula && claveUsuario(x.matricula) === clave))
+    );
     if (!u || !checkPassword(b.password, u)) fail(401, "Usuario o contraseña incorrectos.");
     return json({ token: await createToken(u), usuario: publico(u) });
+  }
+
+  // ---- sección pública para visitantes (sin sesión)
+  if (r0 === "encuesta" && r1 === "preguntas" && m === "GET") {
+    return json({ preguntas: encuesta.PREGUNTAS, version: encuesta.VERSION });
+  }
+
+  if (r0 === "encuesta" && r1 === "respuestas" && m === "POST") {
+    const b = await body(req);
+    // Campo trampa: las personas no lo ven, los programas automáticos lo llenan
+    if (b.sitio) return json({ ok: true });
+    if (Number(b.ms) > 0 && Number(b.ms) < 4000) fail(400, "Tómate un momento para leer las preguntas.");
+    const v = encuesta.validar(b.respuestas);
+    if (v.error) fail(400, v.error);
+    await encuesta.guardar(v.respuestas, ahora.fecha);
+    return json({ ok: true });
+  }
+
+  if (r0 === "publico" && r1 === "area" && m === "GET") {
+    const [areas, plantas, clima] = await Promise.all([db.get("areas", []), db.get("plantas", []), obtenerClima().catch(() => null)]);
+    const activas = plantas.filter((p) => p.activa !== false);
+    return json({
+      zonas: areas.map((a) => ({
+        nombre: a.nombre,
+        descripcion: a.descripcion || "",
+        plantas: activas.filter((p) => p.areaId === a.id).map((p) => ({ nombre: p.nombre, especie: p.especie || "", sol: p.sol || "" })),
+      })),
+      totalPlantas: activas.length,
+      clima: clima?.disponible
+        ? { lugar: clima.lugar, actual: clima.actual, hoy: clima.hoy, decision: clima.decision }
+        : null,
+    });
   }
 
   // ---- con sesión
   const yo = await sesion(req);
 
   if (r0 === "yo" && !r1 && m === "GET") return json({ usuario: publico(yo), ahora });
+
+  // Cada quien puede cambiar su propio usuario (pide la contraseña para confirmar)
+  if (r0 === "yo" && r1 === "usuario" && m === "POST") {
+    const b = await body(req);
+    if (!checkPassword(b.password, yo)) fail(400, "La contraseña no es correcta.");
+    const nuevo = validarFormatoUsuario(b.usuario);
+    const lista = await usuarios();
+    const u = lista.find((x) => x.id === yo.id);
+    u.usuario = nuevo;
+    u.usuarioPropio = true;
+    validarUnico(lista, u, u.id);
+    await guardarUsuarios(lista);
+    return json({ usuario: publico(u) });
+  }
 
   if (r0 === "yo" && r1 === "password" && m === "POST") {
     const b = await body(req);
@@ -236,6 +330,8 @@ async function rutas(req, partes) {
   if (r0 === "clima" && m === "GET") return json(await obtenerClima());
 
   // ---- tareas del día (se generan automáticamente la primera vez que alguien entra)
+  if ((r0 === "hoy" || r0 === "tareas" || r0 === "dia") && !veTurnos(yo)) fail(403, "Tu perfil no tiene acceso a los turnos.");
+
   if (r0 === "hoy" && m === "GET") {
     const dia = await generarDia(ahora.fecha);
     let tareas = (await tareasDelDia(ahora.fecha)).map((t) => conEstado(t, ahora));
@@ -430,7 +526,7 @@ async function rutas(req, partes) {
     const asignables = rolesAsignables(yo.rol);
     // A quién puede modificar: super admin a todos; admin a encargados y estudiantes; encargado a estudiantes
     const puedeTocar = (u) =>
-      yo.rol === "superadmin" || (yo.rol === "admin" ? ["encargado", "estudiante"].includes(u.rol) : u.rol === "estudiante");
+      yo.rol === "superadmin" || (yo.rol === "admin" ? ["encargado", "docente", "estudiante"].includes(u.rol) : u.rol === "estudiante");
     if (m === "GET" && !r1) {
       const visibles = esAdmin(yo) ? lista : lista.filter((u) => u.rol === "estudiante");
       return json({ usuarios: visibles.map(publico), asignables });
@@ -483,9 +579,15 @@ async function rutas(req, partes) {
       return json({ ok: true });
     }
     if (m === "PUT") {
+      const usuarioAntes = u.usuario;
       if (b.nombre) {
         u.nombre = texto(b.nombre, 80);
-        u.usuario = normalize(u.nombre);
+        // Si la persona no ha elegido su propio usuario, se actualiza con el nombre nuevo
+        if (!u.usuarioPropio) u.usuario = sinEspacios(u.nombre);
+      }
+      if (b.usuario && b.usuario !== usuarioAntes) {
+        u.usuario = validarFormatoUsuario(b.usuario);
+        u.usuarioPropio = true;
       }
       if (b.matricula !== undefined) u.matricula = texto(b.matricula, 30);
       if (b.rol && ROLES.includes(b.rol)) u.rol = b.rol;
@@ -627,6 +729,41 @@ async function rutas(req, partes) {
       await db.set("config/ajustes", nuevo);
       await db.del("clima/cache");
       return json({ ajustes: { ...AJUSTES_DEFAULT, ...nuevo } });
+    }
+  }
+
+  // ---- resultados del cuestionario (administradores y docentes)
+  if (r0 === "encuesta") {
+    exigir(yo, "admin", "docente");
+    if (r1 === "resultados" && m === "GET") {
+      const u = new URL(req.url);
+      const periodo = u.searchParams.get("periodo") || "todo";
+      const carrera = texto(u.searchParams.get("carrera"), 40);
+      const desde =
+        periodo === "hoy" ? ahora.fecha
+        : periodo === "7" ? sumarDias(ahora.fecha, -6)
+        : periodo === "30" ? sumarDias(ahora.fecha, -29)
+        : null;
+      const lista = await encuesta.todas();
+      const fechas = Array.from({ length: 14 }, (_, i) => sumarDias(ahora.fecha, i - 13));
+      const deCarrera = carrera ? lista.filter((d) => d.r?.q1 === carrera) : lista;
+      return json({
+        ...encuesta.resumir(lista, { desde, carrera }),
+        totalGeneral: lista.length,
+        hoy: lista.filter((d) => d.fecha === ahora.fecha).length,
+        porDia: encuesta.porDia(deCarrera, fechas),
+        periodo,
+        carrera,
+        ahora,
+      });
+    }
+    if (r1 === "exportar" && m === "GET") {
+      const lista = await encuesta.todas();
+      return json({ preguntas: encuesta.PREGUNTAS, respuestas: lista.map(({ en, fecha, r }) => ({ en, fecha, r })) });
+    }
+    if (r1 === "respuestas" && m === "DELETE") {
+      exigir(yo, "admin");
+      return json({ borradas: await encuesta.borrarTodas() });
     }
   }
 

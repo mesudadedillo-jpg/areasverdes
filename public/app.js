@@ -692,7 +692,7 @@ VISTAS.usuarios = async () => {
       acciones.push(`<button class="btn chico sec" data-accion="activar" data-id="${u.id}">${u.activo === false ? "Activar" : "Desactivar"}</button>`);
     } else acciones.push("<small>Solo el super admin puede modificarlo</small>");
     if (u.rol === "estudiante") acciones.push(`<button class="btn chico sec" data-ir="historial" data-est="${u.id}">Historial</button>`);
-    return `<tr><td><b>${esc(u.nombre)}</b><br><small>Usuario: ${esc(u.usuario)}</small>${u.debeCambiar ? "<br><small>Aún usa su contraseña inicial</small>" : ""}</td><td>${esc(u.matricula) || "<small>—</small>"}</td>
+    return `<tr><td><b>${esc(u.nombre)}</b><br><small>Usuario: ${esc(u.usuario)}</small>${u.debeCambiar ? `<br><small>${estadoClave(u)}</small>` : ""}</td><td>${esc(u.matricula) || "<small>—</small>"}</td>
       ${admin ? `<td>${ROL[u.rol]}</td>` : ""}<td>${u.activo === false ? '<span class="chip info">Inactivo</span>' : '<span class="chip hecha">Activo</span>'}</td>
       <td><div class="fila">${acciones.join("")}</div></td></tr>`;
   };
@@ -716,6 +716,13 @@ VISTAS.usuarios = async () => {
     ${admin ? tabla("Docentes", usuarios.filter((u) => u.rol === "docente"), '<p class="suave">Los docentes solo ven los resultados del cuestionario de visitantes.</p>') : ""}
     ${tabla("Estudiantes", usuarios.filter((u) => u.rol === "estudiante")) || `<section class="tarjeta"><p class="vacio">Aún no hay estudiantes. Usa “Importar estudiantes” para pegar la lista del grupo.</p></section>`}`;
 };
+
+// Qué contraseña tiene alguien que todavía no la ha cambiado
+function estadoClave(u) {
+  if (u.claveAsignada) return "Usa la contraseña que le asignó un administrador";
+  if (!u.matricula) return "Contraseña temporal: areaverde (agrega su matrícula para que sea su contraseña)";
+  return "Aún usa su contraseña inicial (su matrícula)";
+}
 
 function puedeTocar(u) {
   const r = estado.usuario.rol;
@@ -1241,10 +1248,17 @@ const ACCIONES = {
        <div class="campo"><label>Nombre completo</label><input name="nombre" required value="${esc(u.nombre)}" /></div>
        <div class="campo"><label>Usuario</label><input name="usuario" required minlength="3" maxlength="40" autocapitalize="none" spellcheck="false" value="${esc(u.usuario)}" />
          <p class="ayuda">Sin espacios. Si cambias el nombre y dejas este campo igual, el usuario se actualiza solo (salvo que la persona haya elegido el suyo).</p></div>
-       <div class="campo"><label>Matrícula</label><input name="matricula" value="${esc(u.matricula)}" /><p class="ayuda">Con “Restablecer contraseña” la contraseña pasa a ser esta matrícula.</p></div>
+       <div class="campo"><label>Matrícula</label><input name="matricula" value="${esc(u.matricula)}" />
+         <p class="ayuda">${u.debeCambiar
+           ? "Todavía usa su contraseña inicial: si escribes o cambias la matrícula, su contraseña pasa a ser la matrícula."
+           : "Ya eligió su propia contraseña; cambiar la matrícula no la cambia. Usa “Restablecer contraseña” si la olvidó."}</p></div>
+       <div class="campo"><label>Nueva contraseña (opcional)</label><input name="password" type="text" minlength="4" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Déjalo vacío para no cambiarla" />
+         <p class="ayuda">Si la escribes, esa será su contraseña y se le pedirá cambiarla al entrar.</p></div>
        ${asignables.length > 1 && asignables.includes(u.rol) ? `<div class="campo"><label>Perfil</label>${selectorRol(asignables, u.rol)}</div>` : ""}`,
       async (d) => {
-        await api(`usuarios/${u.id}`, { method: "PUT", body: d });
+        if (!d.password) delete d.password;
+        const r = await api(`usuarios/${u.id}`, { method: "PUT", body: d });
+        avisar(r.aviso || "Cambios guardados.");
         ir("usuarios");
       }
     );

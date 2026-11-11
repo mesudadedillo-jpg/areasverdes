@@ -90,8 +90,10 @@ const exigir = (u, ...roles) => {
   if (!roles.includes(rol)) fail(403, "No tienes permiso para esta acción.");
 };
 
-async function guardarUsuarios(lista) {
-  await db.set("usuarios", lista);
+// Todos los cambios a usuarios pasan por aquí: se lee la lista más reciente, se modifica y se guarda
+// solo si nadie más la cambió en ese momento (si no, se repite). Así no se pierden contraseñas ni ediciones.
+function actualizarUsuarios(cambiar) {
+  return db.actualizar("usuarios", [], cambiar);
 }
 
 function crearUsuario({ nombre, matricula, rol, password }) {
@@ -154,8 +156,31 @@ function datosPlanta(b, actual = {}) {
 let semillaLista = false;
 async function asegurarCuentaPrueba() {
   if (semillaLista) return;
-  let lista = await usuarios();
+  const semillaEquipo = !(await db.get("config/semilla-equipo"));
+  const semillaEst = !(await db.get("config/semilla-estudiantes-1"));
+  const repararClaves = !(await db.get("config/reparacion-claves-1"));
+  // Se hace dentro de actualizarUsuarios para no pisar un cambio que alguien guarde al mismo tiempo
+  await actualizarUsuarios((lista) => revisarSemillas(lista, { semillaEquipo, semillaEst, repararClaves }));
+  if (semillaEquipo) await db.set("config/semilla-equipo", true);
+  if (repararClaves) await db.set("config/reparacion-claves-1", true);
+  if (semillaEst) await db.set("config/semilla-estudiantes-1", true);
+  if (!(await db.get("config/sanciones"))) await db.set("config/sanciones", SANCIONES_DEFAULT);
+  semillaLista = true;
+}
+
+// Devuelve false si no hubo nada que cambiar (así no se escribe la lista en cada arranque)
+function revisarSemillas(lista, { semillaEquipo, semillaEst, repararClaves }) {
   let cambio = false;
+  // Reparación (una vez): a los encargados y administradores que se les agregó matrícula pero seguían con la
+  // contraseña temporal "areaverde", su contraseña pasa a ser la matrícula, como dice la pantalla.
+  if (repararClaves) {
+    for (const u of lista) {
+      if (u.rol === "estudiante" || !u.debeCambiar || !u.matricula || u.matricula.length < 4) continue;
+      if (!checkPassword("areaverde", u)) continue;
+      Object.assign(u, hashPassword(u.matricula), { claveTemporal: false });
+      cambio = true;
+    }
+  }
   if (lista.length === 0) {
     lista.push(
       crearUsuario({ nombre: "Test", matricula: process.env.TEST_ADMIN_PASSWORD || "test1234", rol: "superadmin" })
@@ -170,14 +195,14 @@ async function asegurarCuentaPrueba() {
       cambio = true;
     }
   }
-  if (!(await db.get("config/semilla-equipo"))) {
+  if (semillaEquipo) {
     for (const nombre of EQUIPO) {
-      if (lista.some((u) => u.usuario === normalize(nombre))) continue;
+      if (lista.some((u) => claveUsuario(u.usuario) === claveUsuario(nombre))) continue;
       const u = crearUsuario({ nombre, matricula: "", rol: "encargado", password: "areaverde" });
       u.debeCambiar = true;
+      u.claveTemporal = true;
       lista.push(u);
     }
-    await db.set("config/semilla-equipo", true);
     cambio = true;
   }
   // Antes el usuario era el nombre con espacios; ahora es el nombre sin espacios
@@ -187,7 +212,6 @@ async function asegurarCuentaPrueba() {
       cambio = true;
     }
   }
-  const semillaEst = !(await db.get("config/semilla-estudiantes-1"));
   if (semillaEst) {
     for (const [nombre, matricula] of ESTUDIANTES_INICIALES) {
       const k = claveUsuario(nombre);
@@ -196,11 +220,7 @@ async function asegurarCuentaPrueba() {
     }
     cambio = true;
   }
-  if (cambio) await guardarUsuarios(lista);
-  // La marca se guarda después, para no perder a nadie si fallara el guardado
-  if (semillaEst) await db.set("config/semilla-estudiantes-1", true);
-  if (!(await db.get("config/sanciones"))) await db.set("config/sanciones", SANCIONES_DEFAULT);
-  semillaLista = true;
+  return cambio;
 }
 
 // ---------------------------------------------------------------- rutas
@@ -220,7 +240,10 @@ async function rutas(req, partes) {
     const b = await body(req);
     if (!b.password || String(b.password).length < 6) fail(400, "La contraseña debe tener al menos 6 caracteres.");
     const u = crearUsuario({ nombre: b.nombre, matricula: b.matricula, rol: "admin", password: b.password });
-    await guardarUsuarios([u]);
+    await actualizarUsuarios((lista) => {
+      if (lista.length > 0) fail(409, "El sistema ya fue configurado.");
+      lista.push(u);
+    });
     await db.set("config/sanciones", SANCIONES_DEFAULT);
     return json({ token: await createToken(u), usuario: publico(u) });
   }
@@ -230,10 +253,11 @@ async function rutas(req, partes) {
     const clave = claveUsuario(b.usuario);
     if (!clave) fail(401, "Usuario o contraseña incorrectos.");
     const lista = await usuarios();
-    const u = lista.find(
-      (x) => x.activo !== false && (claveUsuario(x.usuario) === clave || (x.matricula && claveUsuario(x.matricula) === clave))
-    );
-    if (!u || !checkPassword(b.password, u)) fail(401, "Usuario o contraseña incorrectos.");
+    // Se revisan todas las cuentas que coinciden (por usuario o por matrícula), no solo la primera
+    const u = lista
+      .filter((x) => x.activo !== false && (claveUsuario(x.usuario) === clave || (x.matricula && claveUsuario(x.matricula) === clave)))
+      .find((x) => checkPassword(b.password, x));
+    if (!u) fail(401, "Usuario o contraseña incorrectos.");
     return json({ token: await createToken(u), usuario: publico(u) });
   }
 
@@ -279,12 +303,14 @@ async function rutas(req, partes) {
     const b = await body(req);
     if (!checkPassword(b.password, yo)) fail(400, "La contraseña no es correcta.");
     const nuevo = validarFormatoUsuario(b.usuario);
-    const lista = await usuarios();
-    const u = lista.find((x) => x.id === yo.id);
-    u.usuario = nuevo;
-    u.usuarioPropio = true;
-    validarUnico(lista, u, u.id);
-    await guardarUsuarios(lista);
+    const u = await actualizarUsuarios((lista) => {
+      const u = lista.find((x) => x.id === yo.id);
+      if (!u) fail(404, "Usuario no encontrado.");
+      u.usuario = nuevo;
+      u.usuarioPropio = true;
+      validarUnico(lista, u, u.id);
+      return u;
+    });
     return json({ usuario: publico(u) });
   }
 
@@ -292,10 +318,12 @@ async function rutas(req, partes) {
     const b = await body(req);
     if (!checkPassword(b.actual, yo)) fail(400, "La contraseña actual no es correcta.");
     if (!b.nueva || String(b.nueva).length < 6) fail(400, "La nueva contraseña debe tener al menos 6 caracteres.");
-    const lista = await usuarios();
-    const u = lista.find((x) => x.id === yo.id);
-    Object.assign(u, hashPassword(b.nueva), { debeCambiar: false });
-    await guardarUsuarios(lista);
+    const nueva = hashPassword(b.nueva);
+    await actualizarUsuarios((lista) => {
+      const u = lista.find((x) => x.id === yo.id);
+      if (!u) fail(404, "Usuario no encontrado.");
+      Object.assign(u, nueva, { debeCambiar: false, claveTemporal: false, claveAsignada: false });
+    });
     return json({ ok: true });
   }
 
@@ -534,70 +562,116 @@ async function rutas(req, partes) {
     const b = await body(req);
     if (m === "POST" && r1 === "importar") {
       // Un estudiante por línea: "Nombre completo, matrícula"
-      const lineas = String(b.texto || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      const creados = [];
-      const errores = [];
-      for (const linea of lineas.slice(0, 300)) {
+      const lineas = String(b.texto || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 300);
+      const nuevos = lineas.map((linea) => {
         const partes = linea.split(/[,;\t]/).map((s) => s.trim()).filter(Boolean);
         const matricula = partes.length > 1 ? partes.pop() : "";
-        const nombre = partes.join(" ");
         try {
-          const u = crearUsuario({ nombre, matricula, rol: "estudiante" });
-          validarUnico(lista, u);
-          lista.push(u);
-          creados.push(u.nombre);
+          return { linea, u: crearUsuario({ nombre: partes.join(" "), matricula, rol: "estudiante" }) };
         } catch (e) {
-          errores.push(`${linea}: ${e.message}`);
+          return { linea, error: e.message };
         }
-      }
-      await guardarUsuarios(lista);
+      });
+      let creados = [];
+      let errores = [];
+      await actualizarUsuarios((lista) => {
+        creados = [];
+        errores = [];
+        for (const n of nuevos) {
+          if (n.error) {
+            errores.push(`${n.linea}: ${n.error}`);
+            continue;
+          }
+          try {
+            validarUnico(lista, n.u);
+            lista.push(n.u);
+            creados.push(n.u.nombre);
+          } catch (e) {
+            errores.push(`${n.linea}: ${e.message}`);
+          }
+        }
+        // Si no se creó nadie, no se escribe la lista
+        return creados.length > 0;
+      });
       return json({ creados, errores });
     }
     if (m === "POST" && !r1) {
       const rol = b.rol || "estudiante";
       if (!asignables.includes(rol)) fail(403, "No puedes crear usuarios con ese perfil.");
       const u = crearUsuario({ nombre: b.nombre, matricula: b.matricula, rol });
-      validarUnico(lista, u);
-      lista.push(u);
-      await guardarUsuarios(lista);
+      await actualizarUsuarios((lista) => {
+        validarUnico(lista, u);
+        lista.push(u);
+      });
       return json({ usuario: publico(u) });
     }
-    const u = lista.find((x) => x.id === r1);
-    if (!u) fail(404, "Usuario no encontrado.");
-    if (!puedeTocar(u)) fail(403, "No puedes modificar este perfil.");
-    if (u.id === yo.id && (m === "DELETE" || (b.activo === false) || (b.rol && b.rol !== yo.rol)))
-      fail(400, "No puedes desactivar ni cambiar el rol de tu propia cuenta.");
-    if (b.rol && b.rol !== u.rol && !asignables.includes(b.rol)) fail(403, "No puedes asignar ese perfil.");
-    // Siempre debe quedar al menos un super admin activo
-    const quitaSuper = u.rol === "superadmin" && (m === "DELETE" || b.activo === false || (b.rol && b.rol !== "superadmin"));
-    if (quitaSuper && lista.filter((x) => x.rol === "superadmin" && x.activo !== false).length <= 1)
-      fail(400, "Debe quedar al menos un super admin.");
+
+    // Revisa permisos sobre la versión más reciente de la lista
+    const revisar = (lista) => {
+      const u = lista.find((x) => x.id === r1);
+      if (!u) fail(404, "Usuario no encontrado.");
+      if (!puedeTocar(u)) fail(403, "No puedes modificar este perfil.");
+      if (u.id === yo.id && (m === "DELETE" || b.activo === false || (b.rol && b.rol !== yo.rol)))
+        fail(400, "No puedes desactivar ni cambiar el rol de tu propia cuenta.");
+      if (b.rol && b.rol !== u.rol && !asignables.includes(b.rol)) fail(403, "No puedes asignar ese perfil.");
+      // Siempre debe quedar al menos un super admin activo
+      const quitaSuper = u.rol === "superadmin" && (m === "DELETE" || b.activo === false || (b.rol && b.rol !== "superadmin"));
+      if (quitaSuper && lista.filter((x) => x.rol === "superadmin" && x.activo !== false).length <= 1)
+        fail(400, "Debe quedar al menos un super admin.");
+      return u;
+    };
+    // El hash se calcula fuera para no repetirlo si hay que reintentar el guardado
+    const nuevaClave = b.password ? String(b.password) : "";
+    if (m === "PUT" && nuevaClave && nuevaClave.length < 4) fail(400, "La contraseña debe tener al menos 4 caracteres.");
+    const hashNueva = nuevaClave ? hashPassword(nuevaClave) : null;
+    const nuevaMatricula = b.matricula !== undefined ? texto(b.matricula, 30) : undefined;
+    const hashMatricula = nuevaMatricula && nuevaMatricula.length >= 4 ? hashPassword(nuevaMatricula) : null;
+
     if (m === "POST" && r2 === "restablecer") {
-      if (!u.matricula) fail(400, "Este usuario no tiene matrícula registrada.");
-      Object.assign(u, hashPassword(u.matricula), { debeCambiar: true });
-      await guardarUsuarios(lista);
-      return json({ ok: true });
+      await actualizarUsuarios((lista) => {
+        const u = revisar(lista);
+        if (!u.matricula) fail(400, "Este usuario no tiene matrícula registrada.");
+        Object.assign(u, hashPassword(u.matricula), { debeCambiar: true, claveTemporal: false, claveAsignada: false });
+      });
+      return json({ ok: true, aviso: "La contraseña ahora es la matrícula." });
     }
     if (m === "PUT") {
-      const usuarioAntes = u.usuario;
-      if (b.nombre) {
-        u.nombre = texto(b.nombre, 80);
-        // Si la persona no ha elegido su propio usuario, se actualiza con el nombre nuevo
-        if (!u.usuarioPropio) u.usuario = sinEspacios(u.nombre);
-      }
-      if (b.usuario && b.usuario !== usuarioAntes) {
-        u.usuario = validarFormatoUsuario(b.usuario);
-        u.usuarioPropio = true;
-      }
-      if (b.matricula !== undefined) u.matricula = texto(b.matricula, 30);
-      if (b.rol && ROLES.includes(b.rol)) u.rol = b.rol;
-      if (typeof b.activo === "boolean") u.activo = b.activo;
-      validarUnico(lista, u, u.id);
-      await guardarUsuarios(lista);
-      return json({ usuario: publico(u) });
+      const r = await actualizarUsuarios((lista) => {
+        const u = revisar(lista);
+        const usuarioAntes = u.usuario;
+        const matriculaAntes = u.matricula || "";
+        let aviso = "";
+        if (b.nombre) {
+          u.nombre = texto(b.nombre, 80);
+          // Si la persona no ha elegido su propio usuario, se actualiza con el nombre nuevo
+          if (!u.usuarioPropio) u.usuario = sinEspacios(u.nombre);
+        }
+        if (b.usuario && b.usuario !== usuarioAntes) {
+          u.usuario = validarFormatoUsuario(b.usuario);
+          u.usuarioPropio = true;
+        }
+        if (nuevaMatricula !== undefined) u.matricula = nuevaMatricula;
+        if (b.rol && ROLES.includes(b.rol)) u.rol = b.rol;
+        if (typeof b.activo === "boolean") u.activo = b.activo;
+        validarUnico(lista, u, u.id);
+        if (hashNueva) {
+          // El administrador le asigna una contraseña; se le pedirá cambiarla al entrar
+          Object.assign(u, hashNueva, { debeCambiar: true, claveTemporal: false, claveAsignada: true });
+          aviso = "Contraseña actualizada.";
+        } else if (hashMatricula && u.matricula !== matriculaAntes && u.debeCambiar) {
+          // Si todavía usaba su contraseña inicial (o la temporal "areaverde"), pasa a ser la matrícula nueva
+          Object.assign(u, hashMatricula, { claveTemporal: false, claveAsignada: false });
+          aviso = "Como aún usaba su contraseña inicial, ahora su contraseña es la matrícula.";
+        }
+        return { u, aviso };
+      });
+      return json({ usuario: publico(r.u), aviso: r.aviso });
     }
     if (m === "DELETE") {
-      await guardarUsuarios(lista.filter((x) => x.id !== u.id));
+      await actualizarUsuarios((lista) => {
+        const u = revisar(lista);
+        lista.splice(lista.indexOf(u), 1);
+      });
       return json({ ok: true });
     }
   }

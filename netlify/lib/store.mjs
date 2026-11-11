@@ -31,7 +31,10 @@ export async function get(key, fallback = null) {
 export async function set(key, value) {
   if (LOCAL) {
     await fs.mkdir(LOCAL_DIR, { recursive: true });
-    await fs.writeFile(fileFor(key), JSON.stringify(value));
+    // Se escribe a un archivo temporal y luego se renombra, para que nadie lea un archivo a medias
+    const tmp = fileFor(key) + "." + process.pid + "." + Math.random().toString(36).slice(2) + ".tmp";
+    await fs.writeFile(tmp, JSON.stringify(value));
+    await fs.rename(tmp, fileFor(key));
     return;
   }
   await blobs().setJSON(key, value);
@@ -60,6 +63,44 @@ export async function list(prefix) {
   }
   const { blobs: items } = await blobs().list({ prefix });
   return items.map((b) => b.key);
+}
+
+// Lee, modifica y guarda un valor sin pisar cambios de otra petición que llegue al mismo tiempo.
+// cambiar(valor) modifica el valor y devuelve un resultado; si devuelve false, no se guarda nada.
+// En Netlify se guarda solo si nadie lo cambió desde que se leyó (etag); si alguien lo cambió, se vuelve a intentar.
+const candados = new Map();
+export function actualizar(key, fallback, cambiar) {
+  if (!LOCAL) return actualizarRemoto(key, fallback, cambiar);
+  // En local (un solo proceso) basta con hacer los cambios de uno en uno
+  const previo = candados.get(key) || Promise.resolve();
+  const turno = previo.catch(() => {}).then(() => actualizarRemoto(key, fallback, cambiar));
+  candados.set(key, turno.catch(() => {}));
+  return turno;
+}
+
+async function actualizarRemoto(key, fallback, cambiar) {
+  for (let intento = 0; intento < 6; intento++) {
+    let valor;
+    let etag;
+    if (LOCAL) {
+      valor = await get(key, null);
+    } else {
+      const r = await blobs().getWithMetadata(key, { type: "json" });
+      valor = r?.data ?? null;
+      etag = r?.etag;
+    }
+    if (valor == null) valor = structuredClone(fallback);
+    const resultado = await cambiar(valor);
+    if (resultado === false) return false;
+    if (LOCAL) {
+      await set(key, valor);
+      return resultado;
+    }
+    const w = await blobs().setJSON(key, valor, etag ? { onlyIfMatch: etag } : { onlyIfNew: true });
+    if (w?.modified !== false) return resultado;
+    await new Promise((ok) => setTimeout(ok, 40 + Math.random() * 120));
+  }
+  throw new Error("Hay muchos cambios al mismo tiempo. Intenta de nuevo.");
 }
 
 export async function getMany(keys) {

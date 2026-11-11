@@ -39,7 +39,7 @@ solo la API lo consulta, y cada ruta revisa la sesión y el perfil. Las contrase
 las sesiones van firmadas y vencen a los 7 días, y las respuestas del cuestionario no llevan nombre, IP ni datos del dispositivo.
 
 **Equipo de mantenimiento:** Joshua, Fabricio, Jesús Ernesto y Marcos Roberto ya vienen registrados como encargados.
-Entran con su nombre completo y la contraseña temporal `areaverde` (la app les pide cambiarla).
+Entran con su nombre completo sin espacios y la contraseña temporal `areaverde`. Si un administrador les agrega su matrícula, su contraseña pasa a ser la matrícula (mientras no la hayan cambiado). Desde *Usuarios → Editar* el administrador también puede asignarles una contraseña.
 
 ## Notificaciones en el celular
 
